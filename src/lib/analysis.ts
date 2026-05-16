@@ -1,5 +1,5 @@
 import Papa from "papaparse";
-import ExcelJS from "exceljs";
+import * as XLSX from "xlsx";
 import {
   AnalysisResult,
   AuditRow,
@@ -13,12 +13,17 @@ import {
   Priority,
   Recommendation,
   TargetingRow,
-  Thresholds
+  Thresholds,
 } from "./types";
 
 type RawRow = Record<string, unknown>;
 
-const AUTO_TARGETS = new Set(["close-match", "loose-match", "substitutes", "complements"]);
+const AUTO_TARGETS = new Set([
+  "close-match",
+  "loose-match",
+  "substitutes",
+  "complements",
+]);
 
 export const defaultThresholds: Thresholds = {
   targetAcos: 0.25,
@@ -28,57 +33,158 @@ export const defaultThresholds: Thresholds = {
   minSales: 50,
   lookbackDays: 7,
   attributionDelayDays: 1,
-  mode: "Balanced"
+  mode: "Balanced",
 };
 
-export function thresholdsForMode(mode: Thresholds["mode"], current: Thresholds): Thresholds {
+export function thresholdsForMode(
+  mode: Thresholds["mode"],
+  current: Thresholds,
+): Thresholds {
   const base = { ...current, mode };
   if (mode === "Conservative") {
-    return { ...base, minClicks: 14, minSpend: 30, minOrders: 3, minSales: 75, attributionDelayDays: 2 };
+    return {
+      ...base,
+      minClicks: 14,
+      minSpend: 30,
+      minOrders: 3,
+      minSales: 75,
+      attributionDelayDays: 2,
+    };
   }
   if (mode === "Aggressive") {
-    return { ...base, minClicks: 5, minSpend: 12, minOrders: 1, minSales: 30, attributionDelayDays: 1 };
+    return {
+      ...base,
+      minClicks: 5,
+      minSpend: 12,
+      minOrders: 1,
+      minSales: 30,
+      attributionDelayDays: 1,
+    };
   }
-  return { ...base, minClicks: 8, minSpend: 20, minOrders: 2, minSales: 50, attributionDelayDays: 1 };
+  return {
+    ...base,
+    minClicks: 8,
+    minSpend: 20,
+    minOrders: 2,
+    minSales: 50,
+    attributionDelayDays: 1,
+  };
 }
 
-export async function parseHistoryCsv(file: File): Promise<RawRow[]> {
+export type ReportKind = "history" | "targeting" | "unknown";
+
+const HISTORY_SIGNATURE = ["time", "metadata", "from", "to"];
+const TARGETING_SIGNATURE = ["campaign name", "targeting", "spend"];
+
+/**
+ * Reads a CSV, XLS, or XLSX file into row objects.
+ * - CSV / text  -> PapaParse (correct UTF-8 handling).
+ * - XLS / XLSX  -> SheetJS (binary; also reads the legacy .xls format).
+ * Throws plain-English errors so the UI can say exactly what went wrong.
+ */
+export async function readRows(file: File): Promise<RawRow[]> {
+  const name = (file.name || "").toLowerCase();
+  const isWorkbook = /\.(xlsx|xlsm|xlsb|xls)$/.test(name);
+
+  if (isWorkbook) {
+    let workbook: XLSX.WorkBook;
+    try {
+      const buffer = await file.arrayBuffer();
+      workbook = XLSX.read(new Uint8Array(buffer), {
+        type: "array",
+        raw: true,
+        cellDates: false,
+      });
+    } catch {
+      throw new Error(
+        `"${file.name}" could not be opened as an Excel file. If it is really a CSV, rename it to end in .csv and upload again.`,
+      );
+    }
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    if (!sheet) throw new Error(`"${file.name}" has no worksheets.`);
+    const rows = XLSX.utils.sheet_to_json<RawRow>(sheet, {
+      defval: "",
+      raw: true,
+    });
+    if (!rows.length) {
+      throw new Error(`"${file.name}" has a header row but no data rows.`);
+    }
+    return rows;
+  }
+
   return new Promise((resolve, reject) => {
     Papa.parse<RawRow>(file, {
       header: true,
       skipEmptyLines: true,
       dynamicTyping: false,
-      complete: (result) => resolve(result.data),
-      error: reject
+      complete: (result) => {
+        if (!result.data.length) {
+          reject(
+            new Error(
+              `"${file.name}" has no data rows. Make sure it is the exported CSV with a header row.`,
+            ),
+          );
+          return;
+        }
+        resolve(result.data);
+      },
+      error: (error) =>
+        reject(
+          new Error(
+            `"${file.name}" could not be read as a CSV: ${error.message}`,
+          ),
+        ),
     });
   });
 }
 
+/** Detects whether a parsed file is the History export or the Targeting report. */
+export function classifyReport(columns: string[]): ReportKind {
+  const lower = columns.map((column) => column.trim().toLowerCase());
+  const has = (needle: string) => lower.includes(needle);
+  const historyHits = HISTORY_SIGNATURE.filter(has).length;
+  const targetingHits = TARGETING_SIGNATURE.filter(has).length;
+  if (historyHits >= 3 && historyHits >= targetingHits) return "history";
+  if (targetingHits >= 2 && targetingHits > historyHits) return "targeting";
+  return "unknown";
+}
+
+function columnsOf(rows: RawRow[]): string[] {
+  return rows.length ? Object.keys(rows[0]) : [];
+}
+
+/** Reads + validates the Amazon Ads History export (CSV, XLS, or XLSX). */
+export async function parseHistoryCsv(file: File): Promise<RawRow[]> {
+  const rows = await readRows(file);
+  const kind = classifyReport(columnsOf(rows));
+  if (kind === "targeting") {
+    throw new Error(
+      `"${file.name}" looks like the Sponsored Products Targeting report, not the bid-change History export. Put it in the other box.`,
+    );
+  }
+  if (kind === "unknown") {
+    throw new Error(
+      `"${file.name}" does not look like the Amazon Ads History export (missing the time / from / to / metadata columns).`,
+    );
+  }
+  return rows;
+}
+
+/** Reads + validates the Sponsored Products Targeting report (XLSX, XLS, or CSV). */
 export async function parseTargetingWorkbook(file: File): Promise<RawRow[]> {
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(await file.arrayBuffer());
-  const sheet = workbook.worksheets[0];
-  if (!sheet) return [];
-
-  const headerRow = sheet.getRow(1);
-  const headerNames: string[] = [];
-  headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-    headerNames[colNumber - 1] = String(cellToValue(cell.value) ?? `Column ${colNumber}`).trim();
-  });
-
-  const records: RawRow[] = [];
-  sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-    if (rowNumber === 1) return;
-    const record: RawRow = {};
-    let hasValue = false;
-    headerNames.forEach((header, index) => {
-      const value = cellToValue(row.getCell(index + 1).value);
-      if (value !== null && value !== undefined && value !== "") hasValue = true;
-      record[header || `Column ${index + 1}`] = value ?? "";
-    });
-    if (hasValue) records.push(record);
-  });
-  return records;
+  const rows = await readRows(file);
+  const kind = classifyReport(columnsOf(rows));
+  if (kind === "history") {
+    throw new Error(
+      `"${file.name}" looks like the bid-change History export, not the Sponsored Products Targeting report. Put it in the other box.`,
+    );
+  }
+  if (kind === "unknown") {
+    throw new Error(
+      `"${file.name}" does not look like the Sponsored Products Targeting report (missing the Campaign Name / Targeting / Spend columns).`,
+    );
+  }
+  return rows;
 }
 
 export function analyzeFiles(
@@ -86,35 +192,57 @@ export function analyzeFiles(
   targetingRaw: RawRow[],
   historyFileName: string,
   targetingFileName: string,
-  thresholds: Thresholds
+  thresholds: Thresholds,
 ): AnalysisResult {
-  const history = historyRaw.map(normalizeHistoryRow).filter(Boolean) as HistoryRow[];
-  const targeting = targetingRaw.map(normalizeTargetingRow).filter(Boolean) as TargetingRow[];
+  const history = historyRaw
+    .map(normalizeHistoryRow)
+    .filter(Boolean) as HistoryRow[];
+  const targeting = targetingRaw
+    .map(normalizeTargetingRow)
+    .filter(Boolean) as TargetingRow[];
   const aggregates = aggregateTargeting(targeting);
   const spHistory = history.filter((row) => row.programType === "SP");
   const sbHistory = history.filter((row) => row.programType === "SB");
   const historyIndexes = buildHistoryIndexes(spHistory);
 
-  const auditRows = aggregates.map((aggregate) => buildAuditRow(aggregate, historyIndexes, thresholds));
+  const auditRows = aggregates.map((aggregate) =>
+    buildAuditRow(aggregate, historyIndexes, thresholds),
+  );
   const unmatchedHistoryRows = getUnmatchedHistoryRows(spHistory, auditRows);
   const campaignSummary = summarizeBy(auditRows, (row) => row.campaign);
   const adGroupSummary = summarizeBy(auditRows, (row) => row.adGroup);
-  const summary = summarize(auditRows, history, spHistory, sbHistory, targeting);
+  const summary = summarize(
+    auditRows,
+    history,
+    spHistory,
+    sbHistory,
+    targeting,
+  );
   const charts = makeChartData(auditRows, campaignSummary);
   const historyStatus = makeHistoryStatus(historyFileName, history);
-  const targetingStatus = makeTargetingStatus(targetingFileName, targeting, aggregates);
+  const targetingStatus = makeTargetingStatus(
+    targetingFileName,
+    targeting,
+    aggregates,
+  );
   const unsupportedHistoryRows = sbHistory;
-  const unmatchedPerformanceRows = auditRows.filter((row) => row.matchLevel === "Unmatched");
+  const unmatchedPerformanceRows = auditRows.filter(
+    (row) => row.matchLevel === "Unmatched",
+  );
 
   const warnings = [
     ...(sbHistory.length
-      ? [`${sbHistory.length.toLocaleString()} Sponsored Brands history rows were isolated because the uploaded performance report is Sponsored Products only.`]
+      ? [
+          `${sbHistory.length.toLocaleString()} Sponsored Brands history rows were isolated because the uploaded performance report is Sponsored Products only.`,
+        ]
       : []),
     ...(unmatchedPerformanceRows.length
-      ? [`${unmatchedPerformanceRows.length.toLocaleString()} Sponsored Products target combinations did not match bid history in the selected window.`]
+      ? [
+          `${unmatchedPerformanceRows.length.toLocaleString()} Sponsored Products target combinations did not match bid history in the selected window.`,
+        ]
       : []),
     "Current bid cannot be known for targets with no bid-change history unless a Bulk Operations file is added.",
-    "Profit-level recommendations need SKU margin, COGS, fees, and target ACoS by product."
+    "Profit-level recommendations need SKU margin, COGS, fees, and target ACoS by product.",
   ];
 
   return {
@@ -128,7 +256,7 @@ export function analyzeFiles(
     unmatchedPerformanceRows,
     unmatchedHistoryRows,
     charts,
-    warnings
+    warnings,
   };
 }
 
@@ -144,7 +272,8 @@ function normalizeHistoryRow(raw: RawRow): HistoryRow | null {
   const targetingType = string(read(raw, "targetingType"));
   const campaignName = string(metadata.campaignName);
   const adGroupName = string(metadata.adGroupName);
-  const bidChangePct = fromBid && toBid !== null ? (toBid - fromBid) / fromBid : null;
+  const bidChangePct =
+    fromBid && toBid !== null ? (toBid - fromBid) / fromBid : null;
 
   const exactKey = makeKey(campaignName, adGroupName, name, matchType);
   const canonicalKey = makeKey(campaignName, adGroupName, name, matchType);
@@ -173,7 +302,7 @@ function normalizeHistoryRow(raw: RawRow): HistoryRow | null {
     bidChangePct,
     exactKey,
     canonicalKey,
-    noMatchTypeKey
+    noMatchTypeKey,
   };
 }
 
@@ -186,7 +315,12 @@ function normalizeTargetingRow(raw: RawRow): TargetingRow | null {
   if (!campaign || !adGroup || !targeting) return null;
 
   const exactKey = makeKey(campaign, adGroup, targeting, matchType);
-  const canonicalKey = makeKey(campaign, adGroup, targeting, canonicalMatchType(matchType, targeting));
+  const canonicalKey = makeKey(
+    campaign,
+    adGroup,
+    targeting,
+    canonicalMatchType(matchType, targeting),
+  );
   const noMatchTypeKey = makeNoMatchTypeKey(campaign, adGroup, targeting);
 
   return {
@@ -214,21 +348,30 @@ function normalizeTargetingRow(raw: RawRow): TargetingRow | null {
     cvr: toNumber(read(raw, "7 Day Conversion Rate")),
     exactKey,
     canonicalKey,
-    noMatchTypeKey
+    noMatchTypeKey,
   };
 }
 
 function aggregateTargeting(rows: TargetingRow[]): PerformanceAggregate[] {
   const groups = new Map<string, TargetingRow[]>();
   rows.forEach((row) => {
-    const key = makeKey(row.campaign, row.adGroup, row.targeting, row.matchType);
+    const key = makeKey(
+      row.campaign,
+      row.adGroup,
+      row.targeting,
+      row.matchType,
+    );
     groups.set(key, [...(groups.get(key) ?? []), row]);
   });
 
   return [...groups.values()].map((items) => {
     const first = items[0];
-    const dateTimes = items.map((item) => item.date?.getTime()).filter((value): value is number => Number.isFinite(value));
-    const uniqueDays = new Set(dateTimes.map((time) => new Date(time).toISOString().slice(0, 10))).size;
+    const dateTimes = items
+      .map((item) => item.date?.getTime())
+      .filter((value): value is number => Number.isFinite(value));
+    const uniqueDays = new Set(
+      dateTimes.map((time) => new Date(time).toISOString().slice(0, 10)),
+    ).size;
     const impressions = sum(items, "impressions");
     const clicks = sum(items, "clicks");
     const spend = sum(items, "spend");
@@ -258,7 +401,7 @@ function aggregateTargeting(rows: TargetingRow[]): PerformanceAggregate[] {
       exactKey: first.exactKey,
       canonicalKey: first.canonicalKey,
       noMatchTypeKey: first.noMatchTypeKey,
-      dailyRows: items
+      dailyRows: items,
     };
   });
 }
@@ -273,11 +416,15 @@ function buildHistoryIndexes(rows: HistoryRow[]): HistoryIndexes {
   return {
     exact: groupHistory(rows, (row) => row.exactKey),
     canonical: groupHistory(rows, (row) => row.canonicalKey),
-    noMatchType: groupHistory(rows, (row) => row.noMatchTypeKey)
+    noMatchType: groupHistory(rows, (row) => row.noMatchTypeKey),
   };
 }
 
-function buildAuditRow(aggregate: PerformanceAggregate, indexes: HistoryIndexes, thresholds: Thresholds): AuditRow {
+function buildAuditRow(
+  aggregate: PerformanceAggregate,
+  indexes: HistoryIndexes,
+  thresholds: Thresholds,
+): AuditRow {
   const matched = findHistoryMatch(aggregate, indexes);
   const historyRows = matched.rows;
   const latestHistory = latest(historyRows);
@@ -298,8 +445,10 @@ function buildAuditRow(aggregate: PerformanceAggregate, indexes: HistoryIndexes,
   if (tooManyBidChanges) secondaryTags.push("Too Many Bid Changes");
   if (profitable && !lastIncrease) secondaryTags.push("Winners Not Scaled");
   if (wasteful && !lastDecrease) secondaryTags.push("Losers Not Reduced");
-  if (profitable && lastDecrease) secondaryTags.push("Profitable Terms Reduced");
-  if (wasteful && lastIncrease) secondaryTags.push("Unprofitable Terms Increased");
+  if (profitable && lastDecrease)
+    secondaryTags.push("Profitable Terms Reduced");
+  if (wasteful && lastIncrease)
+    secondaryTags.push("Unprofitable Terms Increased");
   if (!enoughData) secondaryTags.push("Needs More Data");
 
   const decision = decide({
@@ -314,7 +463,7 @@ function buildAuditRow(aggregate: PerformanceAggregate, indexes: HistoryIndexes,
     lastDecrease,
     bidChanges,
     bidChangePct,
-    impact
+    impact,
   });
 
   return {
@@ -327,23 +476,29 @@ function buildAuditRow(aggregate: PerformanceAggregate, indexes: HistoryIndexes,
     bidChangePct,
     lastBidChangeDate,
     category: decision.category,
-    secondaryTags: [...new Set(secondaryTags.filter((tag) => tag !== decision.category))],
+    secondaryTags: [
+      ...new Set(secondaryTags.filter((tag) => tag !== decision.category)),
+    ],
     recommendation: decision.recommendation,
     priority: decision.priority,
     confidence: decision.confidence,
     reason: decision.reason,
     priorityScore: decision.priorityScore,
-    impact
+    impact,
   };
 }
 
-function findHistoryMatch(aggregate: PerformanceAggregate, indexes: HistoryIndexes): { level: MatchLevel; rows: HistoryRow[] } {
+function findHistoryMatch(
+  aggregate: PerformanceAggregate,
+  indexes: HistoryIndexes,
+): { level: MatchLevel; rows: HistoryRow[] } {
   const exact = indexes.exact.get(aggregate.exactKey);
   if (exact?.length) return { level: "High exact", rows: exact };
   const canonical = indexes.canonical.get(aggregate.canonicalKey);
   if (canonical?.length) return { level: "High canonical", rows: canonical };
   const noMatchType = indexes.noMatchType.get(aggregate.noMatchTypeKey);
-  if (noMatchType?.length) return { level: "Medium no-match-type", rows: noMatchType };
+  if (noMatchType?.length)
+    return { level: "Medium no-match-type", rows: noMatchType };
   return { level: "Unmatched", rows: [] };
 }
 
@@ -360,12 +515,24 @@ function decide(input: {
   bidChanges: number;
   bidChangePct: number | null;
   impact: BeforeAfterImpact;
-}): { category: Category; recommendation: Recommendation; priority: Priority; confidence: AuditRow["confidence"]; reason: string; priorityScore: number } {
+}): {
+  category: Category;
+  recommendation: Recommendation;
+  priority: Priority;
+  confidence: AuditRow["confidence"];
+  reason: string;
+  priorityScore: number;
+} {
   const row = input.aggregate;
   const score = priorityScore(row, input);
   const priority = priorityFromScore(score, input);
-  const confidence = confidenceFor(input.matchLevel, input.enoughData, input.impact);
-  const acosText = row.acos === null ? "no sales" : `${(row.acos * 100).toFixed(1)}% ACoS`;
+  const confidence = confidenceFor(
+    input.matchLevel,
+    input.enoughData,
+    input.impact,
+  );
+  const acosText =
+    row.acos === null ? "no sales" : `${(row.acos * 100).toFixed(1)}% ACoS`;
 
   if (input.matchLevel === "Unmatched" && input.enoughData) {
     return {
@@ -374,7 +541,7 @@ function decide(input: {
       priority,
       confidence: "Review Only",
       priorityScore: score,
-      reason: `This target has enough activity (${row.clicks} clicks, $${row.spend.toFixed(2)} spend), but no matched bid-change history was found.`
+      reason: `This target has enough activity (${row.clicks} clicks, $${row.spend.toFixed(2)} spend), but no matched bid-change history was found.`,
     };
   }
 
@@ -385,18 +552,21 @@ function decide(input: {
       priority: "Watch",
       confidence,
       priorityScore: score,
-      reason: `This target does not yet have enough clicks, spend, or orders for a reliable bid decision.`
+      reason: `This target does not yet have enough clicks, spend, or orders for a reliable bid decision.`,
     };
   }
 
   if (input.wasteful && input.lastIncrease) {
     return {
       category: "Unprofitable Terms Increased",
-      recommendation: input.thresholds.mode === "Aggressive" ? "Pause / review" : "Reduce bid",
+      recommendation:
+        input.thresholds.mode === "Aggressive"
+          ? "Pause / review"
+          : "Reduce bid",
       priority,
       confidence,
       priorityScore: score,
-      reason: `Bid was increased even though this target has ${acosText} with $${row.spend.toFixed(2)} spend.`
+      reason: `Bid was increased even though this target has ${acosText} with $${row.spend.toFixed(2)} spend.`,
     };
   }
 
@@ -407,20 +577,24 @@ function decide(input: {
       priority,
       confidence,
       priorityScore: score,
-      reason: `Bid was reduced even though this target produced $${row.sales.toFixed(2)} sales at ${acosText}.`
+      reason: `Bid was reduced even though this target produced $${row.sales.toFixed(2)} sales at ${acosText}.`,
     };
   }
 
   if (input.wasteful && !input.lastDecrease) {
     return {
       category: "Losers Not Reduced",
-      recommendation: input.thresholds.mode === "Aggressive" && row.orders === 0 ? "Pause / review" : "Reduce bid",
+      recommendation:
+        input.thresholds.mode === "Aggressive" && row.orders === 0
+          ? "Pause / review"
+          : "Reduce bid",
       priority,
       confidence,
       priorityScore: score,
-      reason: row.orders === 0
-        ? `This target spent $${row.spend.toFixed(2)} with 0 orders and no meaningful bid reduction was found.`
-        : `This target has ${acosText}, above the waste threshold, and no meaningful bid reduction was found.`
+      reason:
+        row.orders === 0
+          ? `This target spent $${row.spend.toFixed(2)} with 0 orders and no meaningful bid reduction was found.`
+          : `This target has ${acosText}, above the waste threshold, and no meaningful bid reduction was found.`,
     };
   }
 
@@ -431,7 +605,7 @@ function decide(input: {
       priority,
       confidence,
       priorityScore: score,
-      reason: `This target has ${acosText} with ${row.orders} orders, but no meaningful bid increase was found.`
+      reason: `This target has ${acosText} with ${row.orders} orders, but no meaningful bid increase was found.`,
     };
   }
 
@@ -442,18 +616,21 @@ function decide(input: {
       priority: priority === "Critical" ? "High" : priority,
       confidence,
       priorityScore: score,
-      reason: `This target had ${input.bidChanges} bid changes in the selected window, so wait for cleaner post-change data before another move.`
+      reason: `This target had ${input.bidChanges} bid changes in the selected window, so wait for cleaner post-change data before another move.`,
     };
   }
 
-  if ((input.profitable && input.lastIncrease) || (input.wasteful && input.lastDecrease)) {
+  if (
+    (input.profitable && input.lastIncrease) ||
+    (input.wasteful && input.lastDecrease)
+  ) {
     return {
       category: "Correctly Managed",
       recommendation: "Hold",
       priority: "Low",
       confidence,
       priorityScore: score,
-      reason: `The latest bid direction appears aligned with performance.`
+      reason: `The latest bid direction appears aligned with performance.`,
     };
   }
 
@@ -463,11 +640,15 @@ function decide(input: {
     priority: "Low",
     confidence,
     priorityScore: score,
-    reason: `Performance is not an obvious winner or loser against the current thresholds.`
+    reason: `Performance is not an obvious winner or loser against the current thresholds.`,
   };
 }
 
-function calculateBeforeAfter(aggregate: PerformanceAggregate, history: HistoryRow | null | undefined, thresholds: Thresholds): BeforeAfterImpact {
+function calculateBeforeAfter(
+  aggregate: PerformanceAggregate,
+  history: HistoryRow | null | undefined,
+  thresholds: Thresholds,
+): BeforeAfterImpact {
   if (!history?.time) {
     return emptyImpact("No bid change", "Not enough data");
   }
@@ -478,17 +659,25 @@ function calculateBeforeAfter(aggregate: PerformanceAggregate, history: HistoryR
   const postStart = addDays(changeDate, thresholds.attributionDelayDays);
   const postEnd = addDays(postStart, thresholds.lookbackDays - 1);
 
-  const preRows = aggregate.dailyRows.filter((row) => row.date && row.date >= preStart && row.date <= preEnd);
-  const postRows = aggregate.dailyRows.filter((row) => row.date && row.date >= postStart && row.date <= postEnd);
+  const preRows = aggregate.dailyRows.filter(
+    (row) => row.date && row.date >= preStart && row.date <= preEnd,
+  );
+  const postRows = aggregate.dailyRows.filter(
+    (row) => row.date && row.date >= postStart && row.date <= postEnd,
+  );
   const pre = summarizeDaily(preRows);
   const post = summarizeDaily(postRows);
-  const full = pre.days >= Math.min(3, thresholds.lookbackDays) && post.days >= Math.min(3, thresholds.lookbackDays);
+  const full =
+    pre.days >= Math.min(3, thresholds.lookbackDays) &&
+    post.days >= Math.min(3, thresholds.lookbackDays);
   let label: BeforeAfterImpact["label"] = "Not enough data";
 
   if (full && pre.spend > 0 && post.spend > 0) {
-    const acosImproved = pre.acos !== null && post.acos !== null && post.acos < pre.acos * 0.95;
+    const acosImproved =
+      pre.acos !== null && post.acos !== null && post.acos < pre.acos * 0.95;
     const salesImproved = post.sales > pre.sales * 1.05;
-    const acosWorse = pre.acos !== null && post.acos !== null && post.acos > pre.acos * 1.1;
+    const acosWorse =
+      pre.acos !== null && post.acos !== null && post.acos > pre.acos * 1.1;
     if (acosImproved || salesImproved) label = "Helped";
     else if (acosWorse && post.sales <= pre.sales * 1.05) label = "Hurt";
     else label = "Inconclusive";
@@ -506,7 +695,7 @@ function calculateBeforeAfter(aggregate: PerformanceAggregate, history: HistoryR
     preAcos: pre.acos,
     postAcos: post.acos,
     preDays: pre.days,
-    postDays: post.days
+    postDays: post.days,
   };
 }
 
@@ -514,13 +703,15 @@ function summarizeDaily(rows: TargetingRow[]) {
   const spend = sum(rows, "spend");
   const sales = sum(rows, "sales");
   const orders = sum(rows, "orders");
-  const days = new Set(rows.map((row) => row.date?.toISOString().slice(0, 10)).filter(Boolean)).size;
+  const days = new Set(
+    rows.map((row) => row.date?.toISOString().slice(0, 10)).filter(Boolean),
+  ).size;
   return {
     spend,
     sales,
     orders,
     acos: sales > 0 ? spend / sales : null,
-    days
+    days,
   };
 }
 
@@ -529,44 +720,93 @@ function summarize(
   history: HistoryRow[],
   spHistory: HistoryRow[],
   sbHistory: HistoryRow[],
-  targeting: TargetingRow[]
+  targeting: TargetingRow[],
 ) {
-  const matchedTargets = auditRows.filter((row) => row.matchLevel !== "Unmatched").length;
-  const hasTag = (row: AuditRow, category: Category) => row.category === category || row.secondaryTags.includes(category);
-  const rowsWithIssues = auditRows.filter((row) =>
-    ["Winners Not Scaled", "Losers Not Reduced", "Profitable Terms Reduced", "Unprofitable Terms Increased", "Too Many Bid Changes"].includes(row.category)
+  const matchedTargets = auditRows.filter(
+    (row) => row.matchLevel !== "Unmatched",
   ).length;
-  const actionableRows = auditRows.filter((row) => ["Increase bid", "Reduce bid", "Pause / review", "Review match"].includes(row.recommendation)).length;
-  const decisionScore = Math.max(0, Math.round(100 - (rowsWithIssues / Math.max(1, auditRows.length)) * 70 - (actionableRows / Math.max(1, auditRows.length)) * 20));
+  const hasTag = (row: AuditRow, category: Category) =>
+    row.category === category || row.secondaryTags.includes(category);
+  const rowsWithIssues = auditRows.filter((row) =>
+    [
+      "Winners Not Scaled",
+      "Losers Not Reduced",
+      "Profitable Terms Reduced",
+      "Unprofitable Terms Increased",
+      "Too Many Bid Changes",
+    ].includes(row.category),
+  ).length;
+  const actionableRows = auditRows.filter((row) =>
+    ["Increase bid", "Reduce bid", "Pause / review", "Review match"].includes(
+      row.recommendation,
+    ),
+  ).length;
+  const decisionScore = Math.max(
+    0,
+    Math.round(
+      100 -
+        (rowsWithIssues / Math.max(1, auditRows.length)) * 70 -
+        (actionableRows / Math.max(1, auditRows.length)) * 20,
+    ),
+  );
 
   return {
     totalTargets: auditRows.length,
     matchedTargets,
     unmatchedTargets: auditRows.length - matchedTargets,
-    highExact: auditRows.filter((row) => row.matchLevel === "High exact").length,
-    highCanonical: auditRows.filter((row) => row.matchLevel === "High canonical").length,
-    mediumMatch: auditRows.filter((row) => row.matchLevel === "Medium no-match-type").length,
+    highExact: auditRows.filter((row) => row.matchLevel === "High exact")
+      .length,
+    highCanonical: auditRows.filter(
+      (row) => row.matchLevel === "High canonical",
+    ).length,
+    mediumMatch: auditRows.filter(
+      (row) => row.matchLevel === "Medium no-match-type",
+    ).length,
     historyRows: history.length,
     spHistoryRows: spHistory.length,
     sbHistoryRows: sbHistory.length,
     performanceRows: targeting.length,
-    winnersNotScaled: auditRows.filter((row) => hasTag(row, "Winners Not Scaled")).length,
-    losersNotReduced: auditRows.filter((row) => hasTag(row, "Losers Not Reduced")).length,
-    wrongIncreases: auditRows.filter((row) => row.category === "Unprofitable Terms Increased").length,
-    wrongReductions: auditRows.filter((row) => row.category === "Profitable Terms Reduced").length,
-    needsMoreData: auditRows.filter((row) => row.category === "Needs More Data").length,
-    tooManyBidChanges: auditRows.filter((row) => row.category === "Too Many Bid Changes" || row.secondaryTags.includes("Too Many Bid Changes")).length,
+    winnersNotScaled: auditRows.filter((row) =>
+      hasTag(row, "Winners Not Scaled"),
+    ).length,
+    losersNotReduced: auditRows.filter((row) =>
+      hasTag(row, "Losers Not Reduced"),
+    ).length,
+    wrongIncreases: auditRows.filter(
+      (row) => row.category === "Unprofitable Terms Increased",
+    ).length,
+    wrongReductions: auditRows.filter(
+      (row) => row.category === "Profitable Terms Reduced",
+    ).length,
+    needsMoreData: auditRows.filter((row) => row.category === "Needs More Data")
+      .length,
+    tooManyBidChanges: auditRows.filter(
+      (row) =>
+        row.category === "Too Many Bid Changes" ||
+        row.secondaryTags.includes("Too Many Bid Changes"),
+    ).length,
     estimatedWastedSpend: auditRows
-      .filter((row) => hasTag(row, "Losers Not Reduced") || row.category === "Unprofitable Terms Increased")
+      .filter(
+        (row) =>
+          hasTag(row, "Losers Not Reduced") ||
+          row.category === "Unprofitable Terms Increased",
+      )
       .reduce((total, row) => total + row.spend, 0),
     estimatedMissedSales: auditRows
-      .filter((row) => hasTag(row, "Winners Not Scaled") || row.category === "Profitable Terms Reduced")
+      .filter(
+        (row) =>
+          hasTag(row, "Winners Not Scaled") ||
+          row.category === "Profitable Terms Reduced",
+      )
       .reduce((total, row) => total + row.sales, 0),
-    decisionScore
+    decisionScore,
   };
 }
 
-function summarizeBy(rows: AuditRow[], getKey: (row: AuditRow) => string): CampaignSummary[] {
+function summarizeBy(
+  rows: AuditRow[],
+  getKey: (row: AuditRow) => string,
+): CampaignSummary[] {
   const groups = new Map<string, AuditRow[]>();
   rows.forEach((row) => {
     const key = getKey(row) || "Unknown";
@@ -577,7 +817,9 @@ function summarizeBy(rows: AuditRow[], getKey: (row: AuditRow) => string): Campa
     .map(([campaign, items]) => {
       const spend = sum(items, "spend");
       const sales = sum(items, "sales");
-      const issueCount = items.filter((row) => row.priority !== "Low" && row.priority !== "Watch").length;
+      const issueCount = items.filter(
+        (row) => row.priority !== "Low" && row.priority !== "Watch",
+      ).length;
       return {
         campaign,
         spend,
@@ -586,33 +828,63 @@ function summarizeBy(rows: AuditRow[], getKey: (row: AuditRow) => string): Campa
         acos: sales > 0 ? spend / sales : null,
         targets: items.length,
         issueCount,
-        winnersNotScaled: items.filter((row) => row.category === "Winners Not Scaled").length,
-        losersNotReduced: items.filter((row) => row.category === "Losers Not Reduced").length,
-        wrongBidChanges: items.filter((row) => row.category === "Profitable Terms Reduced" || row.category === "Unprofitable Terms Increased").length,
-        tooManyBidChanges: items.filter((row) => row.category === "Too Many Bid Changes" || row.secondaryTags.includes("Too Many Bid Changes")).length,
-        needsMoreData: items.filter((row) => row.category === "Needs More Data").length,
-        unmatched: items.filter((row) => row.matchLevel === "Unmatched").length
+        winnersNotScaled: items.filter(
+          (row) => row.category === "Winners Not Scaled",
+        ).length,
+        losersNotReduced: items.filter(
+          (row) => row.category === "Losers Not Reduced",
+        ).length,
+        wrongBidChanges: items.filter(
+          (row) =>
+            row.category === "Profitable Terms Reduced" ||
+            row.category === "Unprofitable Terms Increased",
+        ).length,
+        tooManyBidChanges: items.filter(
+          (row) =>
+            row.category === "Too Many Bid Changes" ||
+            row.secondaryTags.includes("Too Many Bid Changes"),
+        ).length,
+        needsMoreData: items.filter((row) => row.category === "Needs More Data")
+          .length,
+        unmatched: items.filter((row) => row.matchLevel === "Unmatched").length,
       };
     })
     .sort((a, b) => b.spend - a.spend);
 }
 
-function makeChartData(auditRows: AuditRow[], campaignSummary: CampaignSummary[]) {
+function makeChartData(
+  auditRows: AuditRow[],
+  campaignSummary: CampaignSummary[],
+) {
   return {
     priorityBreakdown: bucketCounts(auditRows, (row) => row.priority),
     categoryBreakdown: bucketCounts(auditRows, (row) => row.category),
     scatter: auditRows
-      .filter((row) => row.acos !== null && row.bidChangePct !== null && row.spend > 0)
+      .filter(
+        (row) =>
+          row.acos !== null && row.bidChangePct !== null && row.spend > 0,
+      )
       .slice()
       .sort((a, b) => b.spend - a.spend)
       .slice(0, 250)
-      .map((row) => ({ name: row.targeting, acos: row.acos ?? 0, bidChange: row.bidChangePct ?? 0, spend: row.spend, category: row.category })),
+      .map((row) => ({
+        name: row.targeting,
+        acos: row.acos ?? 0,
+        bidChange: row.bidChangePct ?? 0,
+        spend: row.spend,
+        category: row.category,
+      })),
     spendSales: auditRows
       .filter((row) => row.spend > 0 || row.sales > 0)
       .slice()
       .sort((a, b) => b.spend - a.spend)
       .slice(0, 250)
-      .map((row) => ({ name: row.targeting, spend: row.spend, sales: row.sales, category: row.category })),
+      .map((row) => ({
+        name: row.targeting,
+        spend: row.spend,
+        sales: row.sales,
+        category: row.category,
+      })),
     campaignHeatmap: campaignSummary.slice(0, 18),
     beforeAfter: auditRows
       .filter((row) => row.impact.status !== "No bid change")
@@ -624,61 +896,113 @@ function makeChartData(auditRows: AuditRow[], campaignSummary: CampaignSummary[]
         preAcos: row.impact.preAcos,
         postAcos: row.impact.postAcos,
         preSales: row.impact.preSales,
-        postSales: row.impact.postSales
-      }))
+        postSales: row.impact.postSales,
+      })),
   };
 }
 
-function getUnmatchedHistoryRows(spHistory: HistoryRow[], auditRows: AuditRow[]) {
-  const matchedKeys = new Set(auditRows.flatMap((row) => [row.exactKey, row.canonicalKey, row.noMatchTypeKey]));
-  return spHistory.filter((row) => !matchedKeys.has(row.exactKey) && !matchedKeys.has(row.canonicalKey) && !matchedKeys.has(row.noMatchTypeKey));
+function getUnmatchedHistoryRows(
+  spHistory: HistoryRow[],
+  auditRows: AuditRow[],
+) {
+  const matchedKeys = new Set(
+    auditRows.flatMap((row) => [
+      row.exactKey,
+      row.canonicalKey,
+      row.noMatchTypeKey,
+    ]),
+  );
+  return spHistory.filter(
+    (row) =>
+      !matchedKeys.has(row.exactKey) &&
+      !matchedKeys.has(row.canonicalKey) &&
+      !matchedKeys.has(row.noMatchTypeKey),
+  );
 }
 
 function makeHistoryStatus(fileName: string, rows: HistoryRow[]): FileStatus {
-  const times = rows.map((row) => row.time?.getTime()).filter((value): value is number => Number.isFinite(value));
+  const times = rows
+    .map((row) => row.time?.getTime())
+    .filter((value): value is number => Number.isFinite(value));
   const columns = rows[0] ? Object.keys(rows[0].raw) : [];
   const sp = rows.filter((row) => row.programType === "SP").length;
   const sb = rows.filter((row) => row.programType === "SB").length;
   return {
     fileName,
     rowCount: rows.length,
-    dateRange: times.length ? `${new Date(Math.min(...times)).toISOString().slice(0, 10)} to ${new Date(Math.max(...times)).toISOString().slice(0, 10)}` : "-",
+    dateRange: times.length
+      ? `${new Date(Math.min(...times)).toISOString().slice(0, 10)} to ${new Date(Math.max(...times)).toISOString().slice(0, 10)}`
+      : "-",
     reportType: `History bid changes (${sp.toLocaleString()} SP, ${sb.toLocaleString()} SB)`,
-    warnings: sb ? [`${sb.toLocaleString()} SB rows isolated until an SB performance report is uploaded.`] : [],
-    columns
+    warnings: sb
+      ? [
+          `${sb.toLocaleString()} SB rows isolated until an SB performance report is uploaded.`,
+        ]
+      : [],
+    columns,
   };
 }
 
-function makeTargetingStatus(fileName: string, rows: TargetingRow[], aggregates: PerformanceAggregate[]): FileStatus {
-  const times = rows.map((row) => row.date?.getTime()).filter((value): value is number => Number.isFinite(value));
+function makeTargetingStatus(
+  fileName: string,
+  rows: TargetingRow[],
+  aggregates: PerformanceAggregate[],
+): FileStatus {
+  const times = rows
+    .map((row) => row.date?.getTime())
+    .filter((value): value is number => Number.isFinite(value));
   const columns = rows[0] ? Object.keys(rows[0].raw) : [];
   const dailyKeys = aggregates.filter((row) => row.days > 1).length;
   return {
     fileName,
     rowCount: rows.length,
-    dateRange: times.length ? `${new Date(Math.min(...times)).toISOString().slice(0, 10)} to ${new Date(Math.max(...times)).toISOString().slice(0, 10)}` : "-",
+    dateRange: times.length
+      ? `${new Date(Math.min(...times)).toISOString().slice(0, 10)} to ${new Date(Math.max(...times)).toISOString().slice(0, 10)}`
+      : "-",
     reportType: `${dailyKeys ? "Daily" : "Summary"} Sponsored Products targeting performance`,
-    warnings: dailyKeys ? [] : ["Before/after impact needs daily targeting performance data."],
-    columns
+    warnings: dailyKeys
+      ? []
+      : ["Before/after impact needs daily targeting performance data."],
+    columns,
   };
 }
 
 function isProfitable(row: PerformanceAggregate, thresholds: Thresholds) {
-  return row.sales >= thresholds.minSales && row.orders >= thresholds.minOrders && row.acos !== null && row.acos <= thresholds.targetAcos;
+  return (
+    row.sales >= thresholds.minSales &&
+    row.orders >= thresholds.minOrders &&
+    row.acos !== null &&
+    row.acos <= thresholds.targetAcos
+  );
 }
 
 function isWasteful(row: PerformanceAggregate, thresholds: Thresholds) {
   return (
     (row.spend >= thresholds.minSpend && row.orders === 0) ||
-    (row.spend >= thresholds.minSpend && row.acos !== null && row.acos >= thresholds.targetAcos * 1.5)
+    (row.spend >= thresholds.minSpend &&
+      row.acos !== null &&
+      row.acos >= thresholds.targetAcos * 1.5)
   );
 }
 
 function hasEnoughData(row: PerformanceAggregate, thresholds: Thresholds) {
-  return row.clicks >= thresholds.minClicks || row.spend >= thresholds.minSpend || row.orders >= thresholds.minOrders;
+  return (
+    row.clicks >= thresholds.minClicks ||
+    row.spend >= thresholds.minSpend ||
+    row.orders >= thresholds.minOrders
+  );
 }
 
-function priorityScore(row: PerformanceAggregate, input: { wasteful: boolean; profitable: boolean; enoughData: boolean; matchLevel: MatchLevel; tooManyBidChanges: boolean }) {
+function priorityScore(
+  row: PerformanceAggregate,
+  input: {
+    wasteful: boolean;
+    profitable: boolean;
+    enoughData: boolean;
+    matchLevel: MatchLevel;
+    tooManyBidChanges: boolean;
+  },
+) {
   let score = 0;
   score += Math.min(35, row.spend * 0.8);
   score += Math.min(25, row.sales * 0.08);
@@ -691,7 +1015,10 @@ function priorityScore(row: PerformanceAggregate, input: { wasteful: boolean; pr
   return Math.max(0, Math.round(score));
 }
 
-function priorityFromScore(score: number, input: { wasteful: boolean; profitable: boolean; enoughData: boolean }) {
+function priorityFromScore(
+  score: number,
+  input: { wasteful: boolean; profitable: boolean; enoughData: boolean },
+) {
   if (!input.enoughData) return "Watch";
   if (score >= 55) return "Critical";
   if (score >= 38) return "High";
@@ -699,7 +1026,11 @@ function priorityFromScore(score: number, input: { wasteful: boolean; profitable
   return "Low";
 }
 
-function confidenceFor(matchLevel: MatchLevel, enoughData: boolean, impact: BeforeAfterImpact): AuditRow["confidence"] {
+function confidenceFor(
+  matchLevel: MatchLevel,
+  enoughData: boolean,
+  impact: BeforeAfterImpact,
+): AuditRow["confidence"] {
   if (matchLevel === "Unmatched") return "Review Only";
   if (!enoughData) return "Low";
   if (matchLevel === "Medium no-match-type") return "Medium";
@@ -710,7 +1041,9 @@ function confidenceFor(matchLevel: MatchLevel, enoughData: boolean, impact: Befo
 function bucketCounts<T>(rows: T[], getKey: (row: T) => string) {
   const map = new Map<string, number>();
   rows.forEach((row) => map.set(getKey(row), (map.get(getKey(row)) ?? 0) + 1));
-  return [...map.entries()].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+  return [...map.entries()]
+    .map(([name, value]) => ({ name, value }))
+    .sort((a, b) => b.value - a.value);
 }
 
 function groupHistory(rows: HistoryRow[], keyer: (row: HistoryRow) => string) {
@@ -720,14 +1053,21 @@ function groupHistory(rows: HistoryRow[], keyer: (row: HistoryRow) => string) {
     map.set(key, [...(map.get(key) ?? []), row]);
   });
   map.forEach((items, key) => {
-    map.set(key, items.slice().sort((a, b) => (a.time?.getTime() ?? 0) - (b.time?.getTime() ?? 0)));
+    map.set(
+      key,
+      items
+        .slice()
+        .sort((a, b) => (a.time?.getTime() ?? 0) - (b.time?.getTime() ?? 0)),
+    );
   });
   return map;
 }
 
 function latest(rows: HistoryRow[]) {
   if (!rows.length) return null;
-  return rows.slice().sort((a, b) => (b.time?.getTime() ?? 0) - (a.time?.getTime() ?? 0))[0];
+  return rows
+    .slice()
+    .sort((a, b) => (b.time?.getTime() ?? 0) - (a.time?.getTime() ?? 0))[0];
 }
 
 function sum<T>(items: T[], field: keyof T) {
@@ -737,19 +1077,10 @@ function sum<T>(items: T[], field: keyof T) {
 function read(raw: RawRow, name: string) {
   const exact = raw[name];
   if (exact !== undefined) return exact;
-  const found = Object.keys(raw).find((key) => key.trim().toLowerCase() === name.trim().toLowerCase());
+  const found = Object.keys(raw).find(
+    (key) => key.trim().toLowerCase() === name.trim().toLowerCase(),
+  );
   return found ? raw[found] : undefined;
-}
-
-function cellToValue(value: ExcelJS.CellValue): unknown {
-  if (value === null || value === undefined) return "";
-  if (value instanceof Date) return value;
-  if (typeof value !== "object") return value;
-  if ("result" in value) return cellToValue(value.result as ExcelJS.CellValue);
-  if ("text" in value) return value.text;
-  if ("richText" in value) return value.richText.map((part) => part.text).join("");
-  if ("hyperlink" in value && "text" in value) return value.text;
-  return String(value);
 }
 
 function string(value: unknown) {
@@ -760,7 +1091,9 @@ function string(value: unknown) {
 function toNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  const cleaned = String(value).replace(/[$,%\s]/g, "").replace(/,/g, "");
+  const cleaned = String(value)
+    .replace(/[$,%\s]/g, "")
+    .replace(/,/g, "");
   const parsed = Number(cleaned);
   if (!Number.isFinite(parsed)) return null;
   if (String(value).includes("%") && parsed > 1) return parsed / 100;
@@ -768,14 +1101,20 @@ function toNumber(value: unknown): number | null {
 }
 
 function toDate(value: unknown): Date | null {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return utcCalendarDate(value);
+  if (value instanceof Date && !Number.isNaN(value.getTime()))
+    return utcCalendarDate(value);
   if (typeof value === "number") {
     const excelEpoch = new Date(Date.UTC(1899, 11, 30));
-    return utcCalendarDate(new Date(excelEpoch.getTime() + value * 24 * 60 * 60 * 1000));
+    return utcCalendarDate(
+      new Date(excelEpoch.getTime() + value * 24 * 60 * 60 * 1000),
+    );
   }
   const text = String(value).trim();
   const ymd = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (ymd) return new Date(Date.UTC(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])));
+  if (ymd)
+    return new Date(
+      Date.UTC(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])),
+    );
   const parsed = new Date(text);
   return Number.isNaN(parsed.getTime()) ? null : utcCalendarDate(parsed);
 }
@@ -804,7 +1143,12 @@ function canonicalTarget(value: unknown) {
 function canonicalMatchType(matchType: string, target: string) {
   const match = norm(matchType);
   const normalizedTarget = canonicalTarget(target);
-  if (match === "-" && (normalizedTarget.startsWith("asin=") || normalizedTarget.startsWith("asin-expanded=") || normalizedTarget.startsWith("category="))) {
+  if (
+    match === "-" &&
+    (normalizedTarget.startsWith("asin=") ||
+      normalizedTarget.startsWith("asin-expanded=") ||
+      normalizedTarget.startsWith("category="))
+  ) {
     return "TARGETING_EXPRESSION";
   }
   if (match === "-" && AUTO_TARGETS.has(normalizedTarget)) {
@@ -813,8 +1157,18 @@ function canonicalMatchType(matchType: string, target: string) {
   return matchType;
 }
 
-function makeKey(campaign: string, adGroup: string, target: string, matchType: string) {
-  return [norm(campaign), norm(adGroup), canonicalTarget(target), norm(matchType)].join("||");
+function makeKey(
+  campaign: string,
+  adGroup: string,
+  target: string,
+  matchType: string,
+) {
+  return [
+    norm(campaign),
+    norm(adGroup),
+    canonicalTarget(target),
+    norm(matchType),
+  ].join("||");
 }
 
 function makeNoMatchTypeKey(campaign: string, adGroup: string, target: string) {
@@ -828,14 +1182,21 @@ function addDays(date: Date, days: number) {
 }
 
 function startOfDay(date: Date) {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  return new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+  );
 }
 
 function utcCalendarDate(date: Date) {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  return new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+  );
 }
 
-function emptyImpact(status: BeforeAfterImpact["status"], label: BeforeAfterImpact["label"]): BeforeAfterImpact {
+function emptyImpact(
+  status: BeforeAfterImpact["status"],
+  label: BeforeAfterImpact["label"],
+): BeforeAfterImpact {
   return {
     status,
     label,
@@ -848,7 +1209,7 @@ function emptyImpact(status: BeforeAfterImpact["status"], label: BeforeAfterImpa
     preAcos: null,
     postAcos: null,
     preDays: 0,
-    postDays: 0
+    postDays: 0,
   };
 }
 

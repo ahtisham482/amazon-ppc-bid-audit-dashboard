@@ -18,7 +18,14 @@
   --green-soft: #dcfce7;
   --slate-soft: #e2e8f0;
   --radius: 6px;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
   color: var(--ink);
   background: var(--bg);
 }
@@ -210,10 +217,19 @@ h3 {
 
 .upload-strip {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(420px, 1.5fr);
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(
+      420px,
+      1.5fr
+    );
   gap: 12px;
   align-items: stretch;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
+}
+
+.upload-hint {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .file-drop,
@@ -234,6 +250,33 @@ h3 {
   min-height: 82px;
   padding: 14px;
   cursor: pointer;
+  border: 1px dashed var(--line);
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.file-drop:hover {
+  border-color: var(--teal);
+}
+
+.file-drop:focus-visible {
+  outline: none;
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.18);
+}
+
+.file-drop.drag-over {
+  border-style: solid;
+  border-color: var(--teal);
+  background: rgba(15, 118, 110, 0.08);
+}
+
+.file-drop.has-file {
+  border-style: solid;
+  border-color: rgba(15, 118, 110, 0.5);
+  background: rgba(15, 118, 110, 0.05);
 }
 
 .file-drop input {
@@ -241,6 +284,29 @@ h3 {
 }
 
 .file-drop svg {
+  color: var(--teal);
+  flex-shrink: 0;
+}
+
+.file-drop span {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-drop-btn {
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.file-drop-btn:hover {
+  border-color: var(--teal);
   color: var(--teal);
 }
 

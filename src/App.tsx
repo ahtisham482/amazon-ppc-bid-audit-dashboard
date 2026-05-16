@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -17,7 +17,7 @@ import {
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
-  UploadCloud
+  UploadCloud,
 } from "lucide-react";
 import {
   Bar,
@@ -30,14 +30,14 @@ import {
   ScatterChart,
   Tooltip,
   XAxis,
-  YAxis
+  YAxis,
 } from "recharts";
 import {
   analyzeFiles,
+  classifyReport,
   defaultThresholds,
-  parseHistoryCsv,
-  parseTargetingWorkbook,
-  thresholdsForMode
+  readRows,
+  thresholdsForMode,
 } from "./lib/analysis";
 import {
   AnalysisResult,
@@ -46,10 +46,16 @@ import {
   Category,
   Mode,
   Priority,
-  Thresholds
+  Thresholds,
 } from "./lib/types";
 import { dateShort, money, money2, number, percent } from "./lib/format";
-import { auditRowToExport, campaignToExport, downloadText, executiveSummaryMarkdown, toCsv } from "./lib/export";
+import {
+  auditRowToExport,
+  campaignToExport,
+  downloadText,
+  executiveSummaryMarkdown,
+  toCsv,
+} from "./lib/export";
 
 type Section =
   | "Executive"
@@ -69,7 +75,7 @@ const sections: Array<{ id: Section; icon: typeof Activity }> = [
   { id: "Wrong Bids", icon: AlertTriangle },
   { id: "Frequency", icon: RefreshCw },
   { id: "Campaigns", icon: BarChart3 },
-  { id: "Data Quality", icon: ShieldCheck }
+  { id: "Data Quality", icon: ShieldCheck },
 ];
 
 const categoryColors: Record<string, string> = {
@@ -81,46 +87,99 @@ const categoryColors: Record<string, string> = {
   "Too Many Bid Changes": "#92400E",
   "Needs More Data": "#64748B",
   "Correctly Managed": "#16A34A",
-  Monitor: "#475569"
+  Monitor: "#475569",
 };
 
+interface FileInfo {
+  name: string;
+  rows: number;
+}
+
 export default function App() {
-  const [historyFile, setHistoryFile] = useState<File | null>(null);
-  const [targetingFile, setTargetingFile] = useState<File | null>(null);
-  const [historyRaw, setHistoryRaw] = useState<Record<string, unknown>[] | null>(null);
-  const [targetingRaw, setTargetingRaw] = useState<Record<string, unknown>[] | null>(null);
+  const [historyRaw, setHistoryRaw] = useState<
+    Record<string, unknown>[] | null
+  >(null);
+  const [targetingRaw, setTargetingRaw] = useState<
+    Record<string, unknown>[] | null
+  >(null);
+  const [historyInfo, setHistoryInfo] = useState<FileInfo | null>(null);
+  const [targetingInfo, setTargetingInfo] = useState<FileInfo | null>(null);
   const [thresholds, setThresholds] = useState<Thresholds>(defaultThresholds);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [activeSection, setActiveSection] = useState<Section>("Executive");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function runAnalysis() {
-    if (!historyFile || !targetingFile) {
-      setError("Upload both the Amazon Ads History CSV and the Sponsored Products Targeting XLSX.");
-      return;
-    }
-    setIsLoading(true);
+  // One entry point for every upload. Reads the file (CSV / XLS / XLSX),
+  // detects whether it is the History export or the Targeting report from its
+  // columns, and routes it to the correct slot — so it does not matter which
+  // box the user dropped it on.
+  async function ingest(file: File | null) {
+    if (!file) return;
     setError(null);
+    setIsLoading(true);
     try {
-      const [historyRows, targetingRows] = await Promise.all([
-        historyRaw ?? parseHistoryCsv(historyFile),
-        targetingRaw ?? parseTargetingWorkbook(targetingFile)
-      ]);
-      setHistoryRaw(historyRows);
-      setTargetingRaw(targetingRows);
-      setResult(analyzeFiles(historyRows, targetingRows, historyFile.name, targetingFile.name, thresholds));
+      const rows = await readRows(file);
+      const kind = classifyReport(rows.length ? Object.keys(rows[0]) : []);
+      if (kind === "history") {
+        setHistoryRaw(rows);
+        setHistoryInfo({ name: file.name, rows: rows.length });
+        setResult(null);
+      } else if (kind === "targeting") {
+        setTargetingRaw(rows);
+        setTargetingInfo({ name: file.name, rows: rows.length });
+        setResult(null);
+      } else {
+        setError(
+          `"${file.name}" does not look like either report. Upload the Amazon Ads History export (has time / from / to / metadata columns) or the Sponsored Products Targeting report (has Campaign Name / Targeting / Spend columns).`,
+        );
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to parse the uploaded files.");
+      setError(
+        err instanceof Error ? err.message : `Could not read "${file.name}".`,
+      );
     } finally {
       setIsLoading(false);
     }
   }
 
+  function runAnalysis() {
+    if (!historyRaw || !targetingRaw) {
+      setError(
+        "Add both files: the Amazon Ads History export and the Sponsored Products Targeting report.",
+      );
+      return;
+    }
+    setError(null);
+    try {
+      setResult(
+        analyzeFiles(
+          historyRaw,
+          targetingRaw,
+          historyInfo?.name ?? "history",
+          targetingInfo?.name ?? "targeting",
+          thresholds,
+        ),
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Unable to analyze the files.",
+      );
+    }
+  }
+
   function updateThresholds(next: Thresholds) {
     setThresholds(next);
-    if (historyRaw && targetingRaw && historyFile && targetingFile) {
-      setResult(analyzeFiles(historyRaw, targetingRaw, historyFile.name, targetingFile.name, next));
+    if (historyRaw && targetingRaw) {
+      setResult(
+        analyzeFiles(
+          historyRaw,
+          targetingRaw,
+          historyInfo?.name ?? "history",
+          targetingInfo?.name ?? "targeting",
+          next,
+        ),
+      );
     }
   }
 
@@ -128,13 +187,29 @@ export default function App() {
     if (!result) return [];
     switch (activeSection) {
       case "Winners":
-        return result.auditRows.filter((row) => row.category === "Winners Not Scaled" || row.category === "Profitable Terms Reduced");
+        return result.auditRows.filter(
+          (row) =>
+            row.category === "Winners Not Scaled" ||
+            row.category === "Profitable Terms Reduced",
+        );
       case "Waste":
-        return result.auditRows.filter((row) => row.category === "Losers Not Reduced" || row.category === "Unprofitable Terms Increased");
+        return result.auditRows.filter(
+          (row) =>
+            row.category === "Losers Not Reduced" ||
+            row.category === "Unprofitable Terms Increased",
+        );
       case "Wrong Bids":
-        return result.auditRows.filter((row) => row.category === "Profitable Terms Reduced" || row.category === "Unprofitable Terms Increased");
+        return result.auditRows.filter(
+          (row) =>
+            row.category === "Profitable Terms Reduced" ||
+            row.category === "Unprofitable Terms Increased",
+        );
       case "Frequency":
-        return result.auditRows.filter((row) => row.category === "Too Many Bid Changes" || row.secondaryTags.includes("Too Many Bid Changes"));
+        return result.auditRows.filter(
+          (row) =>
+            row.category === "Too Many Bid Changes" ||
+            row.secondaryTags.includes("Too Many Bid Changes"),
+        );
       default:
         return result.auditRows;
     }
@@ -172,17 +247,31 @@ export default function App() {
         <header className="topbar">
           <div>
             <h1>Amazon PPC Bid Decision Quality Auditor</h1>
-            <p>Upload History and Targeting reports to expose missed scaling, spend leakage, wrong bid direction, and over-management.</p>
+            <p>
+              Upload History and Targeting reports to expose missed scaling,
+              spend leakage, wrong bid direction, and over-management.
+            </p>
           </div>
           <div className="topbar-actions">
             {result && (
-              <button className="button ghost" onClick={() => exportBundle(result)}>
+              <button
+                className="button ghost"
+                onClick={() => exportBundle(result)}
+              >
                 <Download size={17} />
                 Export audit
               </button>
             )}
-            <button className="button primary" onClick={runAnalysis} disabled={isLoading || !historyFile || !targetingFile}>
-              {isLoading ? <RefreshCw className="spin" size={17} /> : <LineChart size={17} />}
+            <button
+              className="button primary"
+              onClick={runAnalysis}
+              disabled={isLoading || !historyRaw || !targetingRaw}
+            >
+              {isLoading ? (
+                <RefreshCw className="spin" size={17} />
+              ) : (
+                <LineChart size={17} />
+              )}
               Analyze
             </button>
           </div>
@@ -190,31 +279,32 @@ export default function App() {
 
         <section className="upload-strip" aria-label="Upload reports">
           <FileDrop
-            title="History CSV"
-            description="Amazon Ads bid-change export"
-            accept=".csv"
-            file={historyFile}
-            onChange={(file) => {
-              setHistoryFile(file);
-              setHistoryRaw(null);
-              setResult(null);
-            }}
+            title="History export"
+            description="Amazon Ads bid-change CSV / XLSX"
+            info={historyInfo}
+            busy={isLoading}
+            onFile={ingest}
           />
           <FileDrop
-            title="Targeting XLSX"
-            description="Sponsored Products targeting performance"
-            accept=".xlsx,.xls"
-            file={targetingFile}
-            onChange={(file) => {
-              setTargetingFile(file);
-              setTargetingRaw(null);
-              setResult(null);
-            }}
+            title="Targeting report"
+            description="Sponsored Products Targeting XLSX / XLS / CSV"
+            info={targetingInfo}
+            busy={isLoading}
+            onFile={ingest}
           />
           <ThresholdPanel thresholds={thresholds} onChange={updateThresholds} />
         </section>
+        <p className="upload-hint">
+          Tip: it does not matter which box you use — drop or click either one
+          and the file is detected automatically. CSV, XLS, and XLSX all work.
+        </p>
 
-        {error && <div className="error-banner"><AlertTriangle size={18} />{error}</div>}
+        {error && (
+          <div className="error-banner">
+            <AlertTriangle size={18} />
+            {error}
+          </div>
+        )}
 
         {!result ? (
           <EmptyState />
@@ -235,34 +325,91 @@ export default function App() {
 function FileDrop({
   title,
   description,
-  accept,
-  file,
-  onChange
+  info,
+  busy,
+  onFile,
 }: {
   title: string;
   description: string;
-  accept: string;
-  file: File | null;
-  onChange: (file: File | null) => void;
+  info: FileInfo | null;
+  busy: boolean;
+  onFile: (file: File | null) => void;
 }) {
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  function pick() {
+    inputRef.current?.click();
+  }
+
   return (
-    <label className="file-drop">
+    <div
+      className={`file-drop${dragOver ? " drag-over" : ""}${info ? " has-file" : ""}`}
+      role="button"
+      tabIndex={0}
+      onClick={pick}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          pick();
+        }
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragOver(false);
+        onFile(event.dataTransfer.files?.[0] ?? null);
+      }}
+    >
       <input
+        ref={inputRef}
         type="file"
-        accept={accept}
-        onChange={(event) => onChange(event.target.files?.[0] ?? null)}
+        accept=".csv,.xlsx,.xls,.xlsm,.xlsb,.txt"
+        onChange={(event) => {
+          onFile(event.target.files?.[0] ?? null);
+          event.target.value = "";
+        }}
       />
-      <UploadCloud size={20} />
+      {info ? <CheckCircle2 size={20} /> : <UploadCloud size={20} />}
       <span>
-        <strong>{file ? file.name : title}</strong>
-        <small>{file ? `${(file.size / 1024 / 1024).toFixed(2)} MB` : description}</small>
+        <strong>{info ? info.name : title}</strong>
+        <small>
+          {busy
+            ? "Reading file…"
+            : info
+              ? `Detected · ${info.rows.toLocaleString()} rows`
+              : `${description} — click or drop`}
+        </small>
       </span>
-    </label>
+      <button
+        type="button"
+        className="file-drop-btn"
+        onClick={(event) => {
+          event.stopPropagation();
+          pick();
+        }}
+      >
+        Choose
+      </button>
+    </div>
   );
 }
 
-function ThresholdPanel({ thresholds, onChange }: { thresholds: Thresholds; onChange: (next: Thresholds) => void }) {
-  function setField<K extends keyof Thresholds>(field: K, value: Thresholds[K]) {
+function ThresholdPanel({
+  thresholds,
+  onChange,
+}: {
+  thresholds: Thresholds;
+  onChange: (next: Thresholds) => void;
+}) {
+  function setField<K extends keyof Thresholds>(
+    field: K,
+    value: Thresholds[K],
+  ) {
     onChange({ ...thresholds, [field]: value });
   }
 
@@ -277,7 +424,11 @@ function ThresholdPanel({ thresholds, onChange }: { thresholds: Thresholds; onCh
           Mode
           <select
             value={thresholds.mode}
-            onChange={(event) => onChange(thresholdsForMode(event.target.value as Mode, thresholds))}
+            onChange={(event) =>
+              onChange(
+                thresholdsForMode(event.target.value as Mode, thresholds),
+              )
+            }
           >
             <option>Conservative</option>
             <option>Balanced</option>
@@ -291,24 +442,55 @@ function ThresholdPanel({ thresholds, onChange }: { thresholds: Thresholds; onCh
             value={Math.round(thresholds.targetAcos * 100)}
             min={1}
             max={200}
-            onChange={(event) => setField("targetAcos", Number(event.target.value) / 100)}
+            onChange={(event) =>
+              setField("targetAcos", Number(event.target.value) / 100)
+            }
           />
         </label>
         <label>
           Min clicks
-          <input type="number" value={thresholds.minClicks} min={0} onChange={(event) => setField("minClicks", Number(event.target.value))} />
+          <input
+            type="number"
+            value={thresholds.minClicks}
+            min={0}
+            onChange={(event) =>
+              setField("minClicks", Number(event.target.value))
+            }
+          />
         </label>
         <label>
           Min spend
-          <input type="number" value={thresholds.minSpend} min={0} onChange={(event) => setField("minSpend", Number(event.target.value))} />
+          <input
+            type="number"
+            value={thresholds.minSpend}
+            min={0}
+            onChange={(event) =>
+              setField("minSpend", Number(event.target.value))
+            }
+          />
         </label>
         <label>
           Min orders
-          <input type="number" value={thresholds.minOrders} min={0} onChange={(event) => setField("minOrders", Number(event.target.value))} />
+          <input
+            type="number"
+            value={thresholds.minOrders}
+            min={0}
+            onChange={(event) =>
+              setField("minOrders", Number(event.target.value))
+            }
+          />
         </label>
         <label>
           Lookback
-          <input type="number" value={thresholds.lookbackDays} min={3} max={30} onChange={(event) => setField("lookbackDays", Number(event.target.value))} />
+          <input
+            type="number"
+            value={thresholds.lookbackDays}
+            min={3}
+            max={30}
+            onChange={(event) =>
+              setField("lookbackDays", Number(event.target.value))
+            }
+          />
         </label>
       </div>
     </div>
@@ -321,13 +503,25 @@ function EmptyState() {
       <div className="empty-copy">
         <FileSpreadsheet size={42} />
         <h2>Upload both reports to build the audit.</h2>
-        <p>The dashboard will calculate match confidence, bid-change behavior, target performance, missed scale opportunities, waste leakage, and exportable action lists.</p>
+        <p>
+          The dashboard will calculate match confidence, bid-change behavior,
+          target performance, missed scale opportunities, waste leakage, and
+          exportable action lists.
+        </p>
       </div>
       <div className="empty-checklist">
-        <div><CheckCircle2 size={18} /> History CSV with bid changes</div>
-        <div><CheckCircle2 size={18} /> Sponsored Products targeting XLSX</div>
-        <div><CheckCircle2 size={18} /> Adjustable target ACoS and data thresholds</div>
-        <div><CheckCircle2 size={18} /> Local browser-side processing</div>
+        <div>
+          <CheckCircle2 size={18} /> History CSV with bid changes
+        </div>
+        <div>
+          <CheckCircle2 size={18} /> Sponsored Products targeting XLSX
+        </div>
+        <div>
+          <CheckCircle2 size={18} /> Adjustable target ACoS and data thresholds
+        </div>
+        <div>
+          <CheckCircle2 size={18} /> Local browser-side processing
+        </div>
       </div>
     </section>
   );
@@ -338,7 +532,7 @@ function Dashboard({
   result,
   rows,
   thresholds,
-  onExport
+  onExport,
 }: {
   activeSection: Section;
   result: AnalysisResult;
@@ -350,12 +544,28 @@ function Dashboard({
     <div className="dashboard">
       <StatusStrip result={result} />
       <KpiGrid result={result} />
-      {activeSection === "Executive" && <ExecutiveView result={result} thresholds={thresholds} onExport={onExport} />}
-      {activeSection !== "Executive" && activeSection !== "Campaigns" && activeSection !== "Data Quality" && (
-        <ActionView rows={rows} activeSection={activeSection} onExport={onExport} />
+      {activeSection === "Executive" && (
+        <ExecutiveView
+          result={result}
+          thresholds={thresholds}
+          onExport={onExport}
+        />
       )}
-      {activeSection === "Campaigns" && <CampaignView result={result} onExport={onExport} />}
-      {activeSection === "Data Quality" && <DataQuality result={result} onExport={onExport} />}
+      {activeSection !== "Executive" &&
+        activeSection !== "Campaigns" &&
+        activeSection !== "Data Quality" && (
+          <ActionView
+            rows={rows}
+            activeSection={activeSection}
+            onExport={onExport}
+          />
+        )}
+      {activeSection === "Campaigns" && (
+        <CampaignView result={result} onExport={onExport} />
+      )}
+      {activeSection === "Data Quality" && (
+        <DataQuality result={result} onExport={onExport} />
+      )}
     </div>
   );
 }
@@ -363,15 +573,39 @@ function Dashboard({
 function StatusStrip({ result }: { result: AnalysisResult }) {
   return (
     <section className="status-strip">
-      <StatusItem label="History" value={result.historyStatus.reportType} sub={`${result.historyStatus.rowCount.toLocaleString()} rows · ${result.historyStatus.dateRange}`} />
-      <StatusItem label="Targeting" value={result.targetingStatus.reportType} sub={`${result.targetingStatus.rowCount.toLocaleString()} rows · ${result.targetingStatus.dateRange}`} />
-      <StatusItem label="Match rate" value={`${percent(result.summary.matchedTargets / Math.max(1, result.summary.totalTargets), 1)}`} sub={`${result.summary.matchedTargets.toLocaleString()} of ${result.summary.totalTargets.toLocaleString()} targets`} />
-      <StatusItem label="Unsupported" value={`${result.summary.sbHistoryRows.toLocaleString()} SB rows`} sub="Isolated until SB performance is uploaded" />
+      <StatusItem
+        label="History"
+        value={result.historyStatus.reportType}
+        sub={`${result.historyStatus.rowCount.toLocaleString()} rows · ${result.historyStatus.dateRange}`}
+      />
+      <StatusItem
+        label="Targeting"
+        value={result.targetingStatus.reportType}
+        sub={`${result.targetingStatus.rowCount.toLocaleString()} rows · ${result.targetingStatus.dateRange}`}
+      />
+      <StatusItem
+        label="Match rate"
+        value={`${percent(result.summary.matchedTargets / Math.max(1, result.summary.totalTargets), 1)}`}
+        sub={`${result.summary.matchedTargets.toLocaleString()} of ${result.summary.totalTargets.toLocaleString()} targets`}
+      />
+      <StatusItem
+        label="Unsupported"
+        value={`${result.summary.sbHistoryRows.toLocaleString()} SB rows`}
+        sub="Isolated until SB performance is uploaded"
+      />
     </section>
   );
 }
 
-function StatusItem({ label, value, sub }: { label: string; value: string; sub: string }) {
+function StatusItem({
+  label,
+  value,
+  sub,
+}: {
+  label: string;
+  value: string;
+  sub: string;
+}) {
   return (
     <div className="status-item">
       <span>{label}</span>
@@ -383,12 +617,44 @@ function StatusItem({ label, value, sub }: { label: string; value: string; sub: 
 
 function KpiGrid({ result }: { result: AnalysisResult }) {
   const kpis = [
-    { label: "Decision score", value: `${result.summary.decisionScore}`, sub: "0-100 quality score", tone: "score" },
-    { label: "Targets analyzed", value: number(result.summary.totalTargets), sub: `${number(result.summary.matchedTargets)} matched`, tone: "neutral" },
-    { label: "Winners not scaled", value: number(result.summary.winnersNotScaled), sub: money(result.summary.estimatedMissedSales), tone: "good" },
-    { label: "Waste not reduced", value: number(result.summary.losersNotReduced), sub: money(result.summary.estimatedWastedSpend), tone: "warn" },
-    { label: "Wrong bid changes", value: number(result.summary.wrongIncreases + result.summary.wrongReductions), sub: `${result.summary.wrongIncreases} inc · ${result.summary.wrongReductions} red`, tone: "bad" },
-    { label: "Too many changes", value: number(result.summary.tooManyBidChanges), sub: "Repeated bid edits", tone: "amber" }
+    {
+      label: "Decision score",
+      value: `${result.summary.decisionScore}`,
+      sub: "0-100 quality score",
+      tone: "score",
+    },
+    {
+      label: "Targets analyzed",
+      value: number(result.summary.totalTargets),
+      sub: `${number(result.summary.matchedTargets)} matched`,
+      tone: "neutral",
+    },
+    {
+      label: "Winners not scaled",
+      value: number(result.summary.winnersNotScaled),
+      sub: money(result.summary.estimatedMissedSales),
+      tone: "good",
+    },
+    {
+      label: "Waste not reduced",
+      value: number(result.summary.losersNotReduced),
+      sub: money(result.summary.estimatedWastedSpend),
+      tone: "warn",
+    },
+    {
+      label: "Wrong bid changes",
+      value: number(
+        result.summary.wrongIncreases + result.summary.wrongReductions,
+      ),
+      sub: `${result.summary.wrongIncreases} inc · ${result.summary.wrongReductions} red`,
+      tone: "bad",
+    },
+    {
+      label: "Too many changes",
+      value: number(result.summary.tooManyBidChanges),
+      sub: "Repeated bid edits",
+      tone: "amber",
+    },
   ];
 
   return (
@@ -404,16 +670,30 @@ function KpiGrid({ result }: { result: AnalysisResult }) {
   );
 }
 
-function ExecutiveView({ result, thresholds, onExport }: { result: AnalysisResult; thresholds: Thresholds; onExport: (kind: string) => void }) {
+function ExecutiveView({
+  result,
+  thresholds,
+  onExport,
+}: {
+  result: AnalysisResult;
+  thresholds: Thresholds;
+  onExport: (kind: string) => void;
+}) {
   return (
     <div className="executive-grid">
       <section className="panel wide">
         <div className="panel-header">
           <div>
             <h2>Decision quality story</h2>
-            <p>Target ACoS is set to {percent(thresholds.targetAcos, 0)} using {thresholds.mode.toLowerCase()} thresholds.</p>
+            <p>
+              Target ACoS is set to {percent(thresholds.targetAcos, 0)} using{" "}
+              {thresholds.mode.toLowerCase()} thresholds.
+            </p>
           </div>
-          <button className="button ghost" onClick={() => onExport("executive")}>
+          <button
+            className="button ghost"
+            onClick={() => onExport("executive")}
+          >
             <Download size={16} />
             Summary
           </button>
@@ -429,10 +709,16 @@ function ExecutiveView({ result, thresholds, onExport }: { result: AnalysisResul
         </div>
         <div className="insight-list">
           {result.warnings.map((warning) => (
-            <div className="insight warning" key={warning}><AlertTriangle size={17} />{warning}</div>
+            <div className="insight warning" key={warning}>
+              <AlertTriangle size={17} />
+              {warning}
+            </div>
           ))}
           {topReasons(result.auditRows).map((row) => (
-            <div className="insight" key={`${row.campaign}-${row.targeting}-${row.category}`}>
+            <div
+              className="insight"
+              key={`${row.campaign}-${row.targeting}-${row.category}`}
+            >
               <Flame size={17} />
               <span>{row.reason}</span>
             </div>
@@ -450,7 +736,12 @@ function ExecutiveView({ result, thresholds, onExport }: { result: AnalysisResul
             Actions CSV
           </button>
         </div>
-        <ActionTable rows={result.auditRows.filter((row) => row.priority !== "Low" && row.priority !== "Watch").slice(0, 18)} compact />
+        <ActionTable
+          rows={result.auditRows
+            .filter((row) => row.priority !== "Low" && row.priority !== "Watch")
+            .slice(0, 18)}
+          compact
+        />
       </section>
     </div>
   );
@@ -464,11 +755,34 @@ function Charts({ result }: { result: AnalysisResult }) {
         <ResponsiveContainer width="100%" height={260}>
           <ScatterChart margin={{ top: 10, right: 16, bottom: 20, left: 0 }}>
             <CartesianGrid stroke="#E5E7EB" />
-            <XAxis type="number" dataKey="acos" tickCount={5} tickFormatter={(v) => `${Math.round(v * 100)}%`} name="ACoS" />
-            <YAxis type="number" dataKey="bidChange" tickCount={5} tickFormatter={(v) => `${Math.round(v * 100)}%`} name="Bid change" />
-            <Tooltip formatter={(value: number, name) => name === "acos" || name === "bidChange" ? percent(value, 1) : money2(value)} />
+            <XAxis
+              type="number"
+              dataKey="acos"
+              tickCount={5}
+              tickFormatter={(v) => `${Math.round(v * 100)}%`}
+              name="ACoS"
+            />
+            <YAxis
+              type="number"
+              dataKey="bidChange"
+              tickCount={5}
+              tickFormatter={(v) => `${Math.round(v * 100)}%`}
+              name="Bid change"
+            />
+            <Tooltip
+              formatter={(value: number, name) =>
+                name === "acos" || name === "bidChange"
+                  ? percent(value, 1)
+                  : money2(value)
+              }
+            />
             <Scatter data={result.charts.scatter}>
-              {result.charts.scatter.map((entry, index) => <Cell key={index} fill={categoryColors[entry.category] ?? "#475569"} />)}
+              {result.charts.scatter.map((entry, index) => (
+                <Cell
+                  key={index}
+                  fill={categoryColors[entry.category] ?? "#475569"}
+                />
+              ))}
             </Scatter>
           </ScatterChart>
         </ResponsiveContainer>
@@ -478,11 +792,26 @@ function Charts({ result }: { result: AnalysisResult }) {
         <ResponsiveContainer width="100%" height={260}>
           <ScatterChart margin={{ top: 10, right: 16, bottom: 20, left: 0 }}>
             <CartesianGrid stroke="#E5E7EB" />
-            <XAxis type="number" dataKey="spend" tickCount={5} tickFormatter={(v) => `$${Math.round(v)}`} />
-            <YAxis type="number" dataKey="sales" tickCount={5} tickFormatter={(v) => `$${Math.round(v)}`} />
+            <XAxis
+              type="number"
+              dataKey="spend"
+              tickCount={5}
+              tickFormatter={(v) => `$${Math.round(v)}`}
+            />
+            <YAxis
+              type="number"
+              dataKey="sales"
+              tickCount={5}
+              tickFormatter={(v) => `$${Math.round(v)}`}
+            />
             <Tooltip formatter={(value: number) => money2(value)} />
             <Scatter data={result.charts.spendSales}>
-              {result.charts.spendSales.map((entry, index) => <Cell key={index} fill={categoryColors[entry.category] ?? "#475569"} />)}
+              {result.charts.spendSales.map((entry, index) => (
+                <Cell
+                  key={index}
+                  fill={categoryColors[entry.category] ?? "#475569"}
+                />
+              ))}
             </Scatter>
           </ScatterChart>
         </ResponsiveContainer>
@@ -508,8 +837,18 @@ function Charts({ result }: { result: AnalysisResult }) {
             <YAxis tickFormatter={(v) => `${Math.round(v * 100)}%`} />
             <Tooltip formatter={(value: number) => percent(value, 1)} />
             <Legend />
-            <Bar dataKey="preAcos" name="Pre ACoS" fill="#94A3B8" radius={[6, 6, 0, 0]} />
-            <Bar dataKey="postAcos" name="Post ACoS" fill="#0F766E" radius={[6, 6, 0, 0]} />
+            <Bar
+              dataKey="preAcos"
+              name="Pre ACoS"
+              fill="#94A3B8"
+              radius={[6, 6, 0, 0]}
+            />
+            <Bar
+              dataKey="postAcos"
+              name="Post ACoS"
+              fill="#0F766E"
+              radius={[6, 6, 0, 0]}
+            />
           </BarChart>
         </ResponsiveContainer>
       </div>
@@ -517,13 +856,25 @@ function Charts({ result }: { result: AnalysisResult }) {
   );
 }
 
-function ActionView({ rows, activeSection, onExport }: { rows: AuditRow[]; activeSection: Section; onExport: (kind: string) => void }) {
+function ActionView({
+  rows,
+  activeSection,
+  onExport,
+}: {
+  rows: AuditRow[];
+  activeSection: Section;
+  onExport: (kind: string) => void;
+}) {
   return (
     <section className="panel full">
       <div className="panel-header">
         <div>
-          <h2>{activeSection === "Actions" ? "Action dashboard" : activeSection}</h2>
-          <p>{rows.length.toLocaleString()} target combinations match this view.</p>
+          <h2>
+            {activeSection === "Actions" ? "Action dashboard" : activeSection}
+          </h2>
+          <p>
+            {rows.length.toLocaleString()} target combinations match this view.
+          </p>
         </div>
         <div className="export-row">
           <button className="button ghost" onClick={() => onExport("full")}>
@@ -541,18 +892,27 @@ function ActionView({ rows, activeSection, onExport }: { rows: AuditRow[]; activ
   );
 }
 
-function ActionTable({ rows, compact = false }: { rows: AuditRow[]; compact?: boolean }) {
+function ActionTable({
+  rows,
+  compact = false,
+}: {
+  rows: AuditRow[];
+  compact?: boolean;
+}) {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All");
   const [priority, setPriority] = useState("All");
-  const [sort, setSort] = useState<"priorityScore" | "spend" | "sales" | "acos" | "bidChanges">("priorityScore");
+  const [sort, setSort] = useState<
+    "priorityScore" | "spend" | "sales" | "acos" | "bidChanges"
+  >("priorityScore");
 
   const filtered = useMemo(() => {
     return rows
       .filter((row) => category === "All" || row.category === category)
       .filter((row) => priority === "All" || row.priority === priority)
       .filter((row) => {
-        const haystack = `${row.campaign} ${row.adGroup} ${row.targeting} ${row.reason}`.toLowerCase();
+        const haystack =
+          `${row.campaign} ${row.adGroup} ${row.targeting} ${row.reason}`.toLowerCase();
         return haystack.includes(search.toLowerCase());
       })
       .sort((a, b) => Number(b[sort] ?? 0) - Number(a[sort] ?? 0));
@@ -564,25 +924,44 @@ function ActionTable({ rows, compact = false }: { rows: AuditRow[]; compact?: bo
         <div className="table-tools">
           <label className="search-box">
             <Search size={16} />
-            <input placeholder="Search campaign, target, reason" value={search} onChange={(event) => setSearch(event.target.value)} />
+            <input
+              placeholder="Search campaign, target, reason"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
           </label>
           <label>
             <Filter size={15} />
-            <select value={category} onChange={(event) => setCategory(event.target.value)}>
+            <select
+              value={category}
+              onChange={(event) => setCategory(event.target.value)}
+            >
               <option>All</option>
-              {unique(rows.map((row) => row.category)).map((item) => <option key={item}>{item}</option>)}
+              {unique(rows.map((row) => row.category)).map((item) => (
+                <option key={item}>{item}</option>
+              ))}
             </select>
           </label>
           <label>
             Priority
-            <select value={priority} onChange={(event) => setPriority(event.target.value)}>
+            <select
+              value={priority}
+              onChange={(event) => setPriority(event.target.value)}
+            >
               <option>All</option>
-              {(["Critical", "High", "Medium", "Low", "Watch"] as Priority[]).map((item) => <option key={item}>{item}</option>)}
+              {(
+                ["Critical", "High", "Medium", "Low", "Watch"] as Priority[]
+              ).map((item) => (
+                <option key={item}>{item}</option>
+              ))}
             </select>
           </label>
           <label>
             Sort
-            <select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}>
+            <select
+              value={sort}
+              onChange={(event) => setSort(event.target.value as typeof sort)}
+            >
               <option value="priorityScore">Priority</option>
               <option value="spend">Spend</option>
               <option value="sales">Sales</option>
@@ -612,19 +991,45 @@ function ActionTable({ rows, compact = false }: { rows: AuditRow[]; compact?: bo
           </thead>
           <tbody>
             {filtered.slice(0, compact ? 18 : 500).map((row) => (
-              <tr key={`${row.campaign}-${row.adGroup}-${row.targeting}-${row.matchType}`}>
-                <td><Badge tone={priorityTone(row.priority)}>{row.priority}</Badge></td>
-                <td><strong>{row.recommendation}</strong><small>{row.category}</small></td>
+              <tr
+                key={`${row.campaign}-${row.adGroup}-${row.targeting}-${row.matchType}`}
+              >
+                <td>
+                  <Badge tone={priorityTone(row.priority)}>
+                    {row.priority}
+                  </Badge>
+                </td>
+                <td>
+                  <strong>{row.recommendation}</strong>
+                  <small>{row.category}</small>
+                </td>
                 <td className="reason-cell">{row.reason}</td>
-                <td><span>{row.campaign}</span><small>{row.adGroup}</small></td>
-                <td><span>{row.targeting}</span><small>{row.matchType}</small></td>
+                <td>
+                  <span>{row.campaign}</span>
+                  <small>{row.adGroup}</small>
+                </td>
+                <td>
+                  <span>{row.targeting}</span>
+                  <small>{row.matchType}</small>
+                </td>
                 <td>{money2(row.spend)}</td>
                 <td>{money2(row.sales)}</td>
                 <td>{number(row.orders)}</td>
                 <td>{percent(row.acos)}</td>
-                <td><span>{money2(row.previousBid)} → {money2(row.latestBid)}</span><small>{percent(row.bidChangePct)}</small></td>
-                <td><span>{row.bidChanges}</span><small>{dateShort(row.lastBidChangeDate)}</small></td>
-                <td><Badge tone="slate">{row.confidence}</Badge><small>{row.matchLevel}</small></td>
+                <td>
+                  <span>
+                    {money2(row.previousBid)} → {money2(row.latestBid)}
+                  </span>
+                  <small>{percent(row.bidChangePct)}</small>
+                </td>
+                <td>
+                  <span>{row.bidChanges}</span>
+                  <small>{dateShort(row.lastBidChangeDate)}</small>
+                </td>
+                <td>
+                  <Badge tone="slate">{row.confidence}</Badge>
+                  <small>{row.matchLevel}</small>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -634,7 +1039,13 @@ function ActionTable({ rows, compact = false }: { rows: AuditRow[]; compact?: bo
   );
 }
 
-function CampaignView({ result, onExport }: { result: AnalysisResult; onExport: (kind: string) => void }) {
+function CampaignView({
+  result,
+  onExport,
+}: {
+  result: AnalysisResult;
+  onExport: (kind: string) => void;
+}) {
   return (
     <section className="panel full">
       <div className="panel-header">
@@ -670,7 +1081,13 @@ function CampaignView({ result, onExport }: { result: AnalysisResult; onExport: 
   );
 }
 
-function SummaryTable({ rows, title }: { rows: CampaignSummary[]; title: string }) {
+function SummaryTable({
+  rows,
+  title,
+}: {
+  rows: CampaignSummary[];
+  title: string;
+}) {
   return (
     <div className="summary-table">
       <h3>{title}</h3>
@@ -700,7 +1117,13 @@ function SummaryTable({ rows, title }: { rows: CampaignSummary[]; title: string 
   );
 }
 
-function DataQuality({ result, onExport }: { result: AnalysisResult; onExport: (kind: string) => void }) {
+function DataQuality({
+  result,
+  onExport,
+}: {
+  result: AnalysisResult;
+  onExport: (kind: string) => void;
+}) {
   return (
     <div className="quality-grid">
       <section className="panel">
@@ -711,7 +1134,10 @@ function DataQuality({ result, onExport }: { result: AnalysisResult; onExport: (
           </div>
         </div>
         <FileStatusBlock title="History CSV" status={result.historyStatus} />
-        <FileStatusBlock title="Targeting XLSX" status={result.targetingStatus} />
+        <FileStatusBlock
+          title="Targeting XLSX"
+          status={result.targetingStatus}
+        />
       </section>
       <section className="panel">
         <div className="panel-header">
@@ -719,20 +1145,42 @@ function DataQuality({ result, onExport }: { result: AnalysisResult; onExport: (
             <h2>Match confidence</h2>
             <p>Rows are never silently discarded.</p>
           </div>
-          <button className="button ghost" onClick={() => onExport("unmatched")}>
+          <button
+            className="button ghost"
+            onClick={() => onExport("unmatched")}
+          >
             <Download size={16} />
             Unmatched
           </button>
         </div>
         <div className="match-grid">
-          <StatusItem label="High exact" value={number(result.summary.highExact)} sub="Campaign + ad group + target + match" />
-          <StatusItem label="High canonical" value={number(result.summary.highCanonical)} sub="Product/auto target normalized" />
-          <StatusItem label="Medium" value={number(result.summary.mediumMatch)} sub="Matched without match type" />
-          <StatusItem label="Unmatched" value={number(result.summary.unmatchedTargets)} sub="Visible for review" />
+          <StatusItem
+            label="High exact"
+            value={number(result.summary.highExact)}
+            sub="Campaign + ad group + target + match"
+          />
+          <StatusItem
+            label="High canonical"
+            value={number(result.summary.highCanonical)}
+            sub="Product/auto target normalized"
+          />
+          <StatusItem
+            label="Medium"
+            value={number(result.summary.mediumMatch)}
+            sub="Matched without match type"
+          />
+          <StatusItem
+            label="Unmatched"
+            value={number(result.summary.unmatchedTargets)}
+            sub="Visible for review"
+          />
         </div>
         <div className="warning-stack">
           {result.warnings.map((warning) => (
-            <div className="insight warning" key={warning}><AlertTriangle size={17} />{warning}</div>
+            <div className="insight warning" key={warning}>
+              <AlertTriangle size={17} />
+              {warning}
+            </div>
           ))}
         </div>
       </section>
@@ -749,27 +1197,64 @@ function DataQuality({ result, onExport }: { result: AnalysisResult; onExport: (
   );
 }
 
-function FileStatusBlock({ title, status }: { title: string; status: AnalysisResult["historyStatus"] }) {
+function FileStatusBlock({
+  title,
+  status,
+}: {
+  title: string;
+  status: AnalysisResult["historyStatus"];
+}) {
   return (
     <div className="file-status">
       <h3>{title}</h3>
-      <p><strong>{status.fileName}</strong></p>
+      <p>
+        <strong>{status.fileName}</strong>
+      </p>
       <p>{status.reportType}</p>
-      <p>{status.rowCount.toLocaleString()} rows · {status.dateRange}</p>
+      <p>
+        {status.rowCount.toLocaleString()} rows · {status.dateRange}
+      </p>
       <details>
         <summary>{status.columns.length} detected columns</summary>
-        <div className="column-list">{status.columns.map((column) => <span key={column}>{column}</span>)}</div>
+        <div className="column-list">
+          {status.columns.map((column) => (
+            <span key={column}>{column}</span>
+          ))}
+        </div>
       </details>
     </div>
   );
 }
 
-function Badge({ tone, children }: { tone: string; children: React.ReactNode }) {
+function Badge({
+  tone,
+  children,
+}: {
+  tone: string;
+  children: React.ReactNode;
+}) {
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
-function Meter({ value, max, color }: { value: number; max: number; color: string }) {
-  return <span className="meter" title={`${value}`}><i style={{ width: `${Math.min(100, (value / max) * 100)}%`, background: color }} /></span>;
+function Meter({
+  value,
+  max,
+  color,
+}: {
+  value: number;
+  max: number;
+  color: string;
+}) {
+  return (
+    <span className="meter" title={`${value}`}>
+      <i
+        style={{
+          width: `${Math.min(100, (value / max) * 100)}%`,
+          background: color,
+        }}
+      />
+    </span>
+  );
 }
 
 function topReasons(rows: AuditRow[]) {
@@ -794,27 +1279,52 @@ function priorityTone(priority: Priority) {
 function handleExport(kind: string, result: AnalysisResult) {
   const rows = result.auditRows;
   if (kind === "executive") {
-    downloadText("amazon-ppc-executive-summary.md", executiveSummaryMarkdown(result.summary), "text/markdown;charset=utf-8");
+    downloadText(
+      "amazon-ppc-executive-summary.md",
+      executiveSummaryMarkdown(result.summary),
+      "text/markdown;charset=utf-8",
+    );
     return;
   }
   if (kind === "campaigns") {
-    downloadText("amazon-ppc-campaign-summary.csv", toCsv(result.campaignSummary.map(campaignToExport)));
+    downloadText(
+      "amazon-ppc-campaign-summary.csv",
+      toCsv(result.campaignSummary.map(campaignToExport)),
+    );
     return;
   }
   if (kind === "unmatched") {
-    downloadText("amazon-ppc-unmatched-rows.csv", toCsv(result.unmatchedPerformanceRows.map(auditRowToExport)));
+    downloadText(
+      "amazon-ppc-unmatched-rows.csv",
+      toCsv(result.unmatchedPerformanceRows.map(auditRowToExport)),
+    );
     return;
   }
-  const filtered = kind === "actions"
-    ? rows.filter((row) => ["Increase bid", "Reduce bid", "Pause / review", "Review match"].includes(row.recommendation))
-    : kind === "winners"
-      ? rows.filter((row) => row.category === "Winners Not Scaled")
-      : kind === "waste"
-        ? rows.filter((row) => row.category === "Losers Not Reduced")
-        : kind === "wrong"
-          ? rows.filter((row) => row.category === "Profitable Terms Reduced" || row.category === "Unprofitable Terms Increased")
-          : rows;
-  downloadText(`amazon-ppc-${kind}-audit.csv`, toCsv(filtered.map(auditRowToExport)));
+  const filtered =
+    kind === "actions"
+      ? rows.filter((row) =>
+          [
+            "Increase bid",
+            "Reduce bid",
+            "Pause / review",
+            "Review match",
+          ].includes(row.recommendation),
+        )
+      : kind === "winners"
+        ? rows.filter((row) => row.category === "Winners Not Scaled")
+        : kind === "waste"
+          ? rows.filter((row) => row.category === "Losers Not Reduced")
+          : kind === "wrong"
+            ? rows.filter(
+                (row) =>
+                  row.category === "Profitable Terms Reduced" ||
+                  row.category === "Unprofitable Terms Increased",
+              )
+            : rows;
+  downloadText(
+    `amazon-ppc-${kind}-audit.csv`,
+    toCsv(filtered.map(auditRowToExport)),
+  );
 }
 
 function exportBundle(result: AnalysisResult) {
