@@ -9,7 +9,7 @@ https://ahtisham482.github.io/amazon-ppc-bid-audit-dashboard/
 ## Run
 
 ```powershell
-cd "C:\Users\DELLL\Downloads\$100M offer\ppc-bid-audit-dashboard"
+cd "C:\Users\DELLL\Downloads\$100M offer\PPC-Bid-Tool\ppc-bid-audit-dashboard"
 npm install
 npm run dev -- --port 5173
 ```
