@@ -2,6 +2,10 @@
 
 Upload-based local dashboard for auditing Amazon PPC bid-management decisions.
 
+## Live App
+
+https://ahtisham482.github.io/amazon-ppc-bid-audit-dashboard/
+
 ## Run
 
 ```powershell
@@ -72,4 +76,3 @@ Observed results:
 - Waste not reduced: 1.
 - Wrong bid changes: 4.
 - Too many bid changes: 237.
-
