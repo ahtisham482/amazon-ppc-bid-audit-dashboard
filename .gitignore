@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+.env.*
+*.log
+*.local
+.DS_Store
+Thumbs.db
+
+# Local client/account data should never be committed.
+*.csv
+*.xlsx
+*.xls
+*.tsv
+
+# Local QA screenshots.
+ppc-dashboard-*.png
