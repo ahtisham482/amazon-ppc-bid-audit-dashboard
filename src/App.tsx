@@ -36,9 +36,14 @@ import {
   analyzeFiles,
   classifyReport,
   defaultThresholds,
+  isBulkFile,
+  parseAcosMap,
+  parseBulk,
   readRows,
+  readWorkbookSheetNames,
   thresholdsForMode,
 } from "./lib/analysis";
+import type { BulkTarget } from "./lib/analysis";
 import {
   AnalysisResult,
   AuditRow,
@@ -65,6 +70,7 @@ type Section =
   | "Wrong Bids"
   | "Frequency"
   | "Campaigns"
+  | "Sponsored Brands"
   | "Data Quality"
   | "How it works";
 
@@ -76,6 +82,7 @@ const sections: Array<{ id: Section; icon: typeof Activity }> = [
   { id: "Wrong Bids", icon: AlertTriangle },
   { id: "Frequency", icon: RefreshCw },
   { id: "Campaigns", icon: BarChart3 },
+  { id: "Sponsored Brands", icon: Flame },
   { id: "Data Quality", icon: ShieldCheck },
   { id: "How it works", icon: HelpCircle },
 ];
@@ -116,38 +123,79 @@ export default function App() {
   const [targetingRaw, setTargetingRaw] = useState<
     Record<string, unknown>[] | null
   >(null);
+  const [sbRaw, setSbRaw] = useState<Record<string, unknown>[] | null>(null);
+  const [bulkTargets, setBulkTargets] = useState<BulkTarget[] | null>(null);
+  const [acosMap, setAcosMap] = useState<Map<string, number> | null>(null);
   const [historyInfo, setHistoryInfo] = useState<FileInfo | null>(null);
   const [targetingInfo, setTargetingInfo] = useState<FileInfo | null>(null);
+  const [sbInfo, setSbInfo] = useState<FileInfo | null>(null);
+  const [bulkInfo, setBulkInfo] = useState<FileInfo | null>(null);
+  const [acosInfo, setAcosInfo] = useState<FileInfo | null>(null);
   const [thresholds, setThresholds] = useState<Thresholds>(defaultThresholds);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [activeSection, setActiveSection] = useState<Section>("Executive");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // One entry point for every upload. Reads the file (CSV / XLS / XLSX),
-  // detects whether it is the History export or the Targeting report from its
-  // columns, and routes it to the correct slot — so it does not matter which
-  // box the user dropped it on.
+  // One entry point for every upload. It detects what the file is from its
+  // contents and routes it — so it never matters which box you use. The two
+  // base files (History + SP Targeting) are required; Bulk / SB report / ACoS
+  // map are optional enhancers.
   async function ingest(file: File | null) {
     if (!file) return;
     setError(null);
     setIsLoading(true);
     try {
+      const name = file.name.toLowerCase();
+      const isWorkbook = /\.(xlsx|xlsm|xlsb|xls)$/.test(name);
+      if (isWorkbook) {
+        const sheets = await readWorkbookSheetNames(file);
+        if (isBulkFile(file.name, sheets)) {
+          const targets = await parseBulk(file);
+          if (!targets.length) {
+            setError(
+              `"${file.name}" looks like a Bulk file but no Keyword / Product Targeting rows with bids were found.`,
+            );
+            return;
+          }
+          setBulkTargets(targets);
+          setBulkInfo({ name: file.name, rows: targets.length });
+          setResult(null);
+          return;
+        }
+      }
       const rows = await readRows(file);
       const kind = classifyReport(rows.length ? Object.keys(rows[0]) : []);
       if (kind === "history") {
         setHistoryRaw(rows);
         setHistoryInfo({ name: file.name, rows: rows.length });
-        setResult(null);
       } else if (kind === "targeting") {
         setTargetingRaw(rows);
         setTargetingInfo({ name: file.name, rows: rows.length });
-        setResult(null);
+      } else if (kind === "sb-targeting") {
+        setSbRaw(rows);
+        setSbInfo({ name: file.name, rows: rows.length });
+      } else if (kind === "acos-map") {
+        const map = parseAcosMap(rows);
+        if (!map.size) {
+          setError(
+            `"${file.name}" looks like an ACoS map but no Campaign + Target ACoS rows were found.`,
+          );
+          return;
+        }
+        setAcosMap(map);
+        setAcosInfo({ name: file.name, rows: map.size });
+      } else if (kind === "bulk") {
+        const targets = await parseBulk(file);
+        setBulkTargets(targets);
+        setBulkInfo({ name: file.name, rows: targets.length });
       } else {
         setError(
-          `"${file.name}" does not look like either report. Upload the Amazon Ads History export (has time / from / to / metadata columns) or the Sponsored Products Targeting report (has Campaign Name / Targeting / Spend columns).`,
+          `"${file.name}" was not recognised. Expected: the History export, the SP Targeting report, the SB performance report, an Amazon Bulk file, or a Campaign→Target-ACoS map.`,
         );
+        return;
       }
+      setResult(null);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : `Could not read "${file.name}".`,
@@ -157,10 +205,19 @@ export default function App() {
     }
   }
 
-  function runAnalysis() {
+  function buildOpts() {
+    return {
+      bulkTargets: bulkTargets ?? undefined,
+      sbTargetingRaw: sbRaw ?? undefined,
+      acosMap: acosMap ?? undefined,
+      bulkFileName: bulkInfo?.name,
+    };
+  }
+
+  function compute(next: Thresholds) {
     if (!historyRaw || !targetingRaw) {
       setError(
-        "Add both files: the Amazon Ads History export and the Sponsored Products Targeting report.",
+        "Add both base files: the Amazon Ads History export and the Sponsored Products Targeting report.",
       );
       return;
     }
@@ -172,7 +229,8 @@ export default function App() {
           targetingRaw,
           historyInfo?.name ?? "history",
           targetingInfo?.name ?? "targeting",
-          thresholds,
+          next,
+          buildOpts(),
         ),
       );
     } catch (err) {
@@ -182,19 +240,13 @@ export default function App() {
     }
   }
 
+  function runAnalysis() {
+    compute(thresholds);
+  }
+
   function updateThresholds(next: Thresholds) {
     setThresholds(next);
-    if (historyRaw && targetingRaw) {
-      setResult(
-        analyzeFiles(
-          historyRaw,
-          targetingRaw,
-          historyInfo?.name ?? "history",
-          targetingInfo?.name ?? "targeting",
-          next,
-        ),
-      );
-    }
+    if (historyRaw && targetingRaw && result) compute(next);
   }
 
   const sectionRows = useMemo(() => {
@@ -308,9 +360,49 @@ export default function App() {
           />
           <ThresholdPanel thresholds={thresholds} onChange={updateThresholds} />
         </section>
+        <div className="boosters">
+          <FileDrop
+            title="Optional boosters"
+            description="Bulk file · SB report · Campaign→ACoS map"
+            info={null}
+            busy={isLoading}
+            onFile={ingest}
+          />
+          <div className="booster-chips">
+            {bulkInfo ? (
+              <span className="chip good">
+                ✓ Bulk file · {bulkInfo.rows.toLocaleString()} targets (current
+                bids)
+              </span>
+            ) : (
+              <span className="chip slate">
+                Bulk file — adds current bids, more matches
+              </span>
+            )}
+            {sbInfo ? (
+              <span className="chip good">
+                ✓ SB report · {sbInfo.rows.toLocaleString()} rows (SB audit on)
+              </span>
+            ) : (
+              <span className="chip slate">
+                SB performance report — unlocks the Sponsored Brands audit
+              </span>
+            )}
+            {acosInfo ? (
+              <span className="chip good">
+                ✓ ACoS map · {acosInfo.rows} campaign(s)
+              </span>
+            ) : (
+              <span className="chip slate">
+                Campaign→Target-ACoS map — per-campaign profit targets
+              </span>
+            )}
+          </div>
+        </div>
         <p className="upload-hint">
-          Tip: it does not matter which box you use — drop or click either one
-          and the file is detected automatically. CSV, XLS, and XLSX all work.
+          Tip: it does not matter which box you use — every file is detected
+          automatically by its contents. CSV, XLS, XLSX all work. History + SP
+          Targeting are required; the rest are optional boosters.
         </p>
 
         {error && (
@@ -567,6 +659,7 @@ function Dashboard({
       )}
       {activeSection !== "Executive" &&
         activeSection !== "Campaigns" &&
+        activeSection !== "Sponsored Brands" &&
         activeSection !== "Data Quality" &&
         activeSection !== "How it works" && (
           <ActionView
@@ -578,6 +671,7 @@ function Dashboard({
       {activeSection === "Campaigns" && (
         <CampaignView result={result} onExport={onExport} />
       )}
+      {activeSection === "Sponsored Brands" && <SBView result={result} />}
       {activeSection === "Data Quality" && (
         <DataQuality result={result} onExport={onExport} />
       )}
@@ -1415,6 +1509,110 @@ function FileStatusBlock({
           ))}
         </div>
       </details>
+    </div>
+  );
+}
+
+function SBView({ result }: { result: AnalysisResult }) {
+  const sb = result.sb;
+  if (!sb) {
+    return (
+      <section className="panel full">
+        <div className="panel-header">
+          <div>
+            <h2>Sponsored Brands audit</h2>
+            <p>Not active yet.</p>
+          </div>
+        </div>
+        <div className="sb-empty">
+          <Flame size={36} />
+          <h3>
+            Upload the Sponsored Brands performance report to turn this on.
+          </h3>
+          <p>
+            Your History export already contains{" "}
+            <strong>
+              {result.summary.sbHistoryRows.toLocaleString()} Sponsored Brands
+              bid changes
+            </strong>
+            , but they stay isolated until an SB performance report is added.
+            Drop the <em>Sponsored Brands Keyword/Targeting report</em> into any
+            upload box — it is detected automatically — and a full SB audit
+            appears here (same rules as Sponsored Products).
+          </p>
+        </div>
+      </section>
+    );
+  }
+  const s = sb.summary;
+  const b = s.scoreBreakdown;
+  const grade = gradeFor(s.decisionScore);
+  const total = Math.max(1, b.judged + b.setAside);
+  return (
+    <div className="executive-grid">
+      <section className="panel wide story">
+        <div className="panel-header">
+          <div>
+            <h2>Sponsored Brands — bid-management story</h2>
+            <p>Same audit engine as Sponsored Products, run on SB.</p>
+          </div>
+        </div>
+        <div className={`story-grade ${grade.tone}`}>
+          <div className="story-score">
+            <strong>{s.decisionScore}</strong>
+            <span>/ 100</span>
+          </div>
+          <div>
+            <h3>SB bid-management health: {grade.label}</h3>
+            <p>{b.formula}</p>
+          </div>
+        </div>
+        <div className="score-bar" aria-label="SB score breakdown">
+          <span
+            className="seg good"
+            style={{ width: `${(b.good / total) * 100}%` }}
+          >
+            {b.good > 0 && `${b.good} managed well`}
+          </span>
+          <span
+            className="seg bad"
+            style={{ width: `${(b.issues / total) * 100}%` }}
+          >
+            {b.issues > 0 && `${b.issues} with a problem`}
+          </span>
+          <span
+            className="seg muted"
+            style={{ width: `${(b.setAside / total) * 100}%` }}
+          >
+            {b.setAside > 0 && `${b.setAside} set aside`}
+          </span>
+        </div>
+        <div className="story-narrative">
+          <p>
+            {number(s.totalTargets)} SB targets · {number(s.matchedTargets)}{" "}
+            matched to SB bid history · {number(s.winnersNotScaled)} winners not
+            scaled · {number(s.losersNotReduced)} waste not cut ·{" "}
+            {number(s.tooManyBidChanges)} over-managed.
+          </p>
+        </div>
+        <div className="insight-list">
+          {sb.notes.map((n) => (
+            <div className="insight warning" key={n}>
+              <AlertTriangle size={16} />
+              {n}
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="panel full">
+        <div className="panel-header">
+          <div>
+            <h2>Sponsored Brands — all targets</h2>
+            <p>Click any “Why?” for the exact rule and numbers.</p>
+          </div>
+        </div>
+        <ActionTable rows={sb.auditRows} />
+      </section>
     </div>
   );
 }

@@ -159,6 +159,10 @@ export interface AuditRow extends PerformanceAggregate {
   bidChanges: number;
   previousBid: number | null;
   latestBid: number | null;
+  /** Current bid from the Bulk Operations file, when uploaded. */
+  currentBid: number | null;
+  /** True when this target was found in the Bulk file (its bid is known). */
+  bulkConfirmed: boolean;
   bidChangePct: number | null;
   lastBidChangeDate: Date | null;
   category: Category;
@@ -280,4 +284,29 @@ export interface AnalysisResult {
     }>;
   };
   warnings: string[];
+  /** Sponsored Brands audit, present only when an SB performance report is uploaded. */
+  sb: ProgramResult | null;
+  /** Bulk Operations file status, present only when a Bulk file is uploaded. */
+  bulkStatus: BulkStatus | null;
+}
+
+/** A self-contained audit for one ad program (used for Sponsored Brands). */
+export interface ProgramResult {
+  label: string;
+  auditRows: AuditRow[];
+  campaignSummary: CampaignSummary[];
+  adGroupSummary: CampaignSummary[];
+  summary: Summary;
+  unmatchedPerformanceRows: AuditRow[];
+  notes: string[];
+}
+
+export interface BulkStatus {
+  fileName: string;
+  spTargets: number;
+  sbTargets: number;
+  /** SP performance targets whose current bid is now known from the Bulk file. */
+  spBidsResolved: number;
+  /** SP targets that had no bid history but are confirmed live in the Bulk file. */
+  spNowJudgeable: number;
 }

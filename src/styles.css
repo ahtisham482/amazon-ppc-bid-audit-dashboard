@@ -1231,3 +1231,49 @@ tr.why-detail td {
     gap: 8px;
   }
 }
+
+/* ===== Phase 2: boosters, Sponsored Brands ===== */
+.boosters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 2fr;
+  gap: 12px;
+  align-items: stretch;
+  margin-bottom: 8px;
+}
+.booster-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.booster-chips .chip {
+  font-size: 11.5px;
+}
+.sb-empty {
+  text-align: center;
+  padding: 40px 24px;
+  color: var(--muted);
+}
+.sb-empty svg {
+  color: var(--teal);
+}
+.sb-empty h3 {
+  margin: 12px 0 8px;
+  color: var(--ink);
+  font-size: 17px;
+}
+.sb-empty p {
+  max-width: 620px;
+  margin: 0 auto;
+  line-height: 1.6;
+  font-size: 13.5px;
+}
+@media (max-width: 1080px) {
+  .boosters {
+    grid-template-columns: 1fr;
+  }
+}

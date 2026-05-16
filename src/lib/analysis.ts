@@ -74,10 +74,27 @@ export function thresholdsForMode(
   };
 }
 
-export type ReportKind = "history" | "targeting" | "unknown";
+export type ReportKind =
+  | "history"
+  | "targeting"
+  | "sb-targeting"
+  | "bulk"
+  | "acos-map"
+  | "unknown";
 
 const HISTORY_SIGNATURE = ["time", "metadata", "from", "to"];
 const TARGETING_SIGNATURE = ["campaign name", "targeting", "spend"];
+const BULK_SIGNATURE = ["product", "entity", "operation"];
+const ACOS_MAP_KEYS = [
+  "target acos",
+  "break-even acos",
+  "breakeven acos",
+  "break even acos",
+];
+const BULK_SHEETS = [
+  "Sponsored Products Campaigns",
+  "Sponsored Brands Campaigns",
+];
 
 /**
  * Reads a CSV, XLS, or XLSX file into row objects.
@@ -141,14 +158,33 @@ export async function readRows(file: File): Promise<RawRow[]> {
   });
 }
 
-/** Detects whether a parsed file is the History export or the Targeting report. */
+/** Detects what kind of file this is from its column names. */
 export function classifyReport(columns: string[]): ReportKind {
   const lower = columns.map((column) => column.trim().toLowerCase());
   const has = (needle: string) => lower.includes(needle);
+  const hasLike = (sub: string) => lower.some((c) => c.includes(sub));
+
+  // Bulk Operations file — its first sheet (Portfolios) has Product/Entity/Operation.
+  if (BULK_SIGNATURE.every(has)) return "bulk";
+
   const historyHits = HISTORY_SIGNATURE.filter(has).length;
+  if (historyHits >= 3) return "history";
+
   const targetingHits = TARGETING_SIGNATURE.filter(has).length;
-  if (historyHits >= 3 && historyHits >= targetingHits) return "history";
-  if (targetingHits >= 2 && targetingHits > historyHits) return "targeting";
+  if (targetingHits >= 2) {
+    // SB performance reports use 14-day attribution; SP uses 7-day.
+    if (hasLike("14 day total sales") && !hasLike("7 day total sales")) {
+      return "sb-targeting";
+    }
+    return "targeting";
+  }
+
+  if (
+    (has("campaign") || has("campaign name") || has("portfolio name")) &&
+    ACOS_MAP_KEYS.some((k) => hasLike(k))
+  ) {
+    return "acos-map";
+  }
   return "unknown";
 }
 
@@ -190,12 +226,235 @@ export async function parseTargetingWorkbook(file: File): Promise<RawRow[]> {
   return rows;
 }
 
+/** Fast peek at a workbook's sheet names (used to spot a Bulk file). */
+export async function readWorkbookSheetNames(file: File): Promise<string[]> {
+  try {
+    const buffer = await file.arrayBuffer();
+    const wb = XLSX.read(new Uint8Array(buffer), {
+      type: "array",
+      bookSheets: true,
+    });
+    return wb.SheetNames ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export function isBulkFile(fileName: string, sheetNames: string[]): boolean {
+  if (/^bulk[-_]/i.test(fileName)) return true;
+  return sheetNames.some((s) => BULK_SHEETS.includes(s));
+}
+
+export interface BulkTarget {
+  programType: "SP" | "SB";
+  campaign: string;
+  adGroup: string;
+  target: string;
+  matchType: string;
+  currentBid: number | null;
+}
+
+/**
+ * Reads the Bulk Operations file. Only the SP/SB Campaigns sheets are parsed
+ * (a Bulk file is ~20 MB; this keeps it fast). Returns one row per live
+ * Keyword / Product Targeting with its current bid.
+ */
+export async function parseBulk(file: File): Promise<BulkTarget[]> {
+  const buffer = await file.arrayBuffer();
+  const wb = XLSX.read(new Uint8Array(buffer), {
+    type: "array",
+    raw: true,
+    sheets: BULK_SHEETS,
+  });
+  const out: BulkTarget[] = [];
+  for (const sheetName of BULK_SHEETS) {
+    const ws = wb.Sheets[sheetName];
+    if (!ws) continue;
+    const rows = XLSX.utils.sheet_to_json<RawRow>(ws, {
+      defval: "",
+      raw: true,
+    });
+    for (const r of rows) {
+      const entity = string(read(r, "Entity"));
+      if (entity !== "Keyword" && entity !== "Product Targeting") continue;
+      const productType = string(read(r, "Product"));
+      const programType = productType.includes("Brands") ? "SB" : "SP";
+      const campaign =
+        string(read(r, "Campaign Name")) ||
+        string(read(r, "Campaign Name (Informational only)"));
+      const adGroup =
+        string(read(r, "Ad Group Name")) ||
+        string(read(r, "Ad Group Name (Informational only)"));
+      const target =
+        entity === "Keyword"
+          ? string(read(r, "Keyword Text"))
+          : string(read(r, "Product Targeting Expression")) ||
+            string(read(r, "Resolved Product Targeting Expression"));
+      if (!campaign || !target) continue;
+      const bid =
+        toNumber(read(r, "Bid")) ??
+        toNumber(read(r, "Ad Group Default Bid")) ??
+        null;
+      out.push({
+        programType,
+        campaign,
+        adGroup,
+        target,
+        matchType: string(read(r, "Match Type")),
+        currentBid: bid,
+      });
+    }
+  }
+  return out;
+}
+
+/** Per-program lookup of current bid, with several key fallbacks. */
+interface BulkIndex {
+  byExact: Map<string, number>;
+  byCanonical: Map<string, number>;
+  byNoMatchType: Map<string, number>;
+  byCampaignTarget: Map<string, number>;
+}
+
+function buildBulkIndex(
+  targets: BulkTarget[],
+  program: "SP" | "SB",
+): BulkIndex {
+  const idx: BulkIndex = {
+    byExact: new Map(),
+    byCanonical: new Map(),
+    byNoMatchType: new Map(),
+    byCampaignTarget: new Map(),
+  };
+  for (const t of targets) {
+    if (t.programType !== program) continue;
+    if (t.currentBid === null) continue;
+    idx.byExact.set(
+      makeKey(t.campaign, t.adGroup, t.target, t.matchType),
+      t.currentBid,
+    );
+    idx.byCanonical.set(
+      makeKey(
+        t.campaign,
+        t.adGroup,
+        t.target,
+        canonicalMatchType(t.matchType, t.target),
+      ),
+      t.currentBid,
+    );
+    idx.byNoMatchType.set(
+      makeNoMatchTypeKey(t.campaign, t.adGroup, t.target),
+      t.currentBid,
+    );
+    idx.byCampaignTarget.set(
+      `${norm(t.campaign)}||${canonicalTarget(t.target)}`,
+      t.currentBid,
+    );
+  }
+  return idx;
+}
+
+function bulkBidFor(
+  aggregate: PerformanceAggregate,
+  idx: BulkIndex | null,
+): number | null {
+  if (!idx) return null;
+  const ct = `${norm(aggregate.campaign)}||${canonicalTarget(aggregate.targeting)}`;
+  return (
+    idx.byExact.get(aggregate.exactKey) ??
+    idx.byCanonical.get(aggregate.canonicalKey) ??
+    idx.byNoMatchType.get(aggregate.noMatchTypeKey) ??
+    idx.byCampaignTarget.get(ct) ??
+    null
+  );
+}
+
+/** Parses an optional per-campaign target-ACoS map file. */
+export function parseAcosMap(rows: RawRow[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const r of rows) {
+    const campaign =
+      string(read(r, "Campaign")) ||
+      string(read(r, "Campaign Name")) ||
+      string(read(r, "Portfolio name")) ||
+      string(read(r, "Portfolio"));
+    let acos =
+      toNumber(read(r, "Target ACoS")) ??
+      toNumber(read(r, "Break-even ACoS")) ??
+      toNumber(read(r, "Breakeven ACoS")) ??
+      toNumber(read(r, "Break even ACoS"));
+    if (!campaign || acos === null) continue;
+    if (acos > 1) acos = acos / 100; // accept "25" or "0.25"
+    map.set(norm(campaign), acos);
+  }
+  return map;
+}
+
+export interface AnalyzeOptions {
+  bulkTargets?: BulkTarget[];
+  sbTargetingRaw?: RawRow[];
+  acosMap?: Map<string, number>;
+  bulkFileName?: string;
+}
+
+function effectiveThresholds(
+  thresholds: Thresholds,
+  acosMap: Map<string, number> | undefined,
+  campaign: string,
+): Thresholds {
+  if (!acosMap || !acosMap.size) return thresholds;
+  const override = acosMap.get(norm(campaign));
+  return override === undefined
+    ? thresholds
+    : { ...thresholds, targetAcos: override };
+}
+
+/** Builds a self-contained audit for one program (used for Sponsored Brands). */
+function runProgramAudit(
+  programHistory: HistoryRow[],
+  targeting: TargetingRow[],
+  thresholds: Thresholds,
+  bulk: BulkIndex | null,
+  acosMap: Map<string, number> | undefined,
+  label: string,
+  notes: string[],
+): import("./types").ProgramResult {
+  const aggregates = aggregateTargeting(targeting);
+  const indexes = buildHistoryIndexes(programHistory);
+  const auditRows = aggregates.map((aggregate) =>
+    buildAuditRow(
+      aggregate,
+      indexes,
+      effectiveThresholds(thresholds, acosMap, aggregate.campaign),
+      bulk,
+    ),
+  );
+  return {
+    label,
+    auditRows,
+    campaignSummary: summarizeBy(auditRows, (row) => row.campaign),
+    adGroupSummary: summarizeBy(auditRows, (row) => row.adGroup),
+    summary: summarize(
+      auditRows,
+      programHistory,
+      programHistory,
+      [],
+      targeting,
+    ),
+    unmatchedPerformanceRows: auditRows.filter(
+      (row) => row.matchLevel === "Unmatched",
+    ),
+    notes,
+  };
+}
+
 export function analyzeFiles(
   historyRaw: RawRow[],
   targetingRaw: RawRow[],
   historyFileName: string,
   targetingFileName: string,
   thresholds: Thresholds,
+  opts: AnalyzeOptions = {},
 ): AnalysisResult {
   const history = historyRaw
     .map(normalizeHistoryRow)
@@ -208,8 +467,16 @@ export function analyzeFiles(
   const sbHistory = history.filter((row) => row.programType === "SB");
   const historyIndexes = buildHistoryIndexes(spHistory);
 
+  const spBulk = opts.bulkTargets
+    ? buildBulkIndex(opts.bulkTargets, "SP")
+    : null;
   const auditRows = aggregates.map((aggregate) =>
-    buildAuditRow(aggregate, historyIndexes, thresholds),
+    buildAuditRow(
+      aggregate,
+      historyIndexes,
+      effectiveThresholds(thresholds, opts.acosMap, aggregate.campaign),
+      spBulk,
+    ),
   );
   const unmatchedHistoryRows = getUnmatchedHistoryRows(spHistory, auditRows);
   const campaignSummary = summarizeBy(auditRows, (row) => row.campaign);
@@ -233,19 +500,77 @@ export function analyzeFiles(
     (row) => row.matchLevel === "Unmatched",
   );
 
+  // --- Sponsored Brands audit (only if an SB report was uploaded) ---
+  let sb: import("./types").ProgramResult | null = null;
+  if (opts.sbTargetingRaw && opts.sbTargetingRaw.length) {
+    const sbTargeting = opts.sbTargetingRaw
+      .map(normalizeTargetingRow)
+      .filter(Boolean) as TargetingRow[];
+    const sbBulk = opts.bulkTargets
+      ? buildBulkIndex(opts.bulkTargets, "SB")
+      : null;
+    sb = runProgramAudit(
+      sbHistory,
+      sbTargeting,
+      thresholds,
+      sbBulk,
+      opts.acosMap,
+      "Sponsored Brands",
+      [
+        "Sponsored Brands reports are summary-level (a date range, not daily), so before/after impact is not available for SB.",
+        "SB uses 14-day attribution; SP uses 7-day. Numbers are not directly comparable across programs.",
+      ],
+    );
+  }
+
+  // --- Bulk status ---
+  let bulkStatus: import("./types").BulkStatus | null = null;
+  if (opts.bulkTargets) {
+    const spResolved = auditRows.filter((r) => r.bulkConfirmed).length;
+    const nowJudgeable = auditRows.filter(
+      (r) => r.bulkConfirmed && r.matchLevel === "Unmatched",
+    ).length;
+    bulkStatus = {
+      fileName: opts.bulkFileName ?? "Bulk file",
+      spTargets: opts.bulkTargets.filter((t) => t.programType === "SP").length,
+      sbTargets: opts.bulkTargets.filter((t) => t.programType === "SB").length,
+      spBidsResolved: spResolved,
+      spNowJudgeable: nowJudgeable,
+    };
+  }
+
   const warnings = [
-    ...(sbHistory.length
+    ...(sbHistory.length && !sb
       ? [
-          `${sbHistory.length.toLocaleString()} Sponsored Brands history rows were isolated because the uploaded performance report is Sponsored Products only.`,
+          `${sbHistory.length.toLocaleString()} Sponsored Brands history rows are isolated. Upload the Sponsored Brands performance report to audit them (see the Sponsored Brands tab).`,
+        ]
+      : []),
+    ...(sb
+      ? [
+          `Sponsored Brands audit is active: ${sb.summary.totalTargets.toLocaleString()} SB targets, ${sb.summary.matchedTargets.toLocaleString()} matched. See the Sponsored Brands tab.`,
         ]
       : []),
     ...(unmatchedPerformanceRows.length
       ? [
-          `${unmatchedPerformanceRows.length.toLocaleString()} Sponsored Products target combinations did not match bid history in the selected window.`,
+          bulkStatus
+            ? `${unmatchedPerformanceRows.length.toLocaleString()} SP targets had no bid-change history; ${bulkStatus.spNowJudgeable.toLocaleString()} of them now have a known current bid from the Bulk file.`
+            : `${unmatchedPerformanceRows.length.toLocaleString()} Sponsored Products target combinations did not match bid history in the selected window.`,
         ]
       : []),
-    "If a target had no bid change in this file's date range, its current bid is unknown here. Upload a Bulk Operations file to fill in current bids and match more targets.",
-    "For true profit calls, add a break-even or target ACoS per product. Until then the tool uses one global target ACoS.",
+    ...(opts.bulkTargets
+      ? [
+          `Current bids loaded from the Bulk file for ${bulkStatus?.spBidsResolved.toLocaleString()} SP targets.`,
+        ]
+      : [
+          "If a target had no bid change in this file's date range, its current bid is unknown here. Upload a Bulk Operations file to fill in current bids and match more targets.",
+        ]),
+    ...(opts.acosMap && opts.acosMap.size
+      ? [
+          `Per-campaign target ACoS applied to ${opts.acosMap.size.toLocaleString()} campaign(s) from your ACoS map.`,
+        ]
+      : [
+          "For true profit calls, add a break-even or target ACoS per product. Until then the tool uses one global target ACoS.",
+        ]),
   ];
 
   return {
@@ -261,6 +586,8 @@ export function analyzeFiles(
     methodology: getMethodology(thresholds),
     charts,
     warnings,
+    sb,
+    bulkStatus,
   };
 }
 
@@ -346,10 +673,23 @@ function normalizeTargetingRow(raw: RawRow): TargetingRow | null {
     spend: toNumber(read(raw, "Spend")) ?? 0,
     acos: toNumber(read(raw, "Total Advertising Cost of Sales (ACOS)")),
     roas: toNumber(read(raw, "Total Return on Advertising Spend (ROAS)")),
-    sales: toNumber(read(raw, "7 Day Total Sales")) ?? 0,
-    orders: toNumber(read(raw, "7 Day Total Orders (#)")) ?? 0,
-    units: toNumber(read(raw, "7 Day Total Units (#)")) ?? 0,
-    cvr: toNumber(read(raw, "7 Day Conversion Rate")),
+    // SP reports use 7-day attribution; SB reports use 14-day. Fall back so
+    // the same normalizer serves both (SP files never hit the 14-day branch).
+    sales:
+      toNumber(read(raw, "7 Day Total Sales")) ??
+      toNumber(read(raw, "14 Day Total Sales")) ??
+      0,
+    orders:
+      toNumber(read(raw, "7 Day Total Orders (#)")) ??
+      toNumber(read(raw, "14 Day Total Orders (#)")) ??
+      0,
+    units:
+      toNumber(read(raw, "7 Day Total Units (#)")) ??
+      toNumber(read(raw, "14 Day Total Units (#)")) ??
+      0,
+    cvr:
+      toNumber(read(raw, "7 Day Conversion Rate")) ??
+      toNumber(read(raw, "14 Day Conversion Rate")),
     exactKey,
     canonicalKey,
     noMatchTypeKey,
@@ -428,10 +768,13 @@ function buildAuditRow(
   aggregate: PerformanceAggregate,
   indexes: HistoryIndexes,
   thresholds: Thresholds,
+  bulk: BulkIndex | null = null,
 ): AuditRow {
   const matched = findHistoryMatch(aggregate, indexes);
   const historyRows = matched.rows;
   const latestHistory = latest(historyRows);
+  const currentBid = bulkBidFor(aggregate, bulk);
+  const bulkConfirmed = currentBid !== null;
   const bidChanges = historyRows.length;
   const previousBid = latestHistory?.fromBid ?? null;
   const latestBid = latestHistory?.toBid ?? null;
@@ -486,6 +829,14 @@ function buildAuditRow(
     impact,
   });
 
+  const explainWithBid =
+    currentBid !== null
+      ? {
+          ...explain,
+          rule: `${explain.rule}  ·  Current bid (from Bulk file): ${money(currentBid)}.`,
+        }
+      : explain;
+
   return {
     ...aggregate,
     matchLevel: matched.level,
@@ -493,6 +844,8 @@ function buildAuditRow(
     bidChanges,
     previousBid,
     latestBid,
+    currentBid,
+    bulkConfirmed,
     bidChangePct,
     lastBidChangeDate,
     category: decision.category,
@@ -502,8 +855,8 @@ function buildAuditRow(
     recommendation: decision.recommendation,
     priority: decision.priority,
     confidence: decision.confidence,
-    reason: explain.reason,
-    explain,
+    reason: explainWithBid.reason,
+    explain: explainWithBid,
     priorityScore: decision.priorityScore,
     impact,
   };
