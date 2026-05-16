@@ -864,3 +864,370 @@ summary {
     font-size: 24px;
   }
 }
+
+/* ===== Phase 1: explainable story, why-rows, methodology, campaigns ===== */
+
+.section-intro {
+  background: var(--surface-2);
+  border-left: 3px solid var(--teal);
+  padding: 8px 12px;
+  border-radius: 4px;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 4px 0 6px;
+}
+
+/* Story header */
+.story-grade {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  margin-bottom: 14px;
+}
+.story-grade.good {
+  background: var(--green-soft);
+  border-color: var(--green);
+}
+.story-grade.amber {
+  background: var(--teal-soft);
+  border-color: var(--teal);
+}
+.story-grade.warn {
+  background: var(--amber-soft);
+  border-color: var(--amber);
+}
+.story-grade.bad {
+  background: var(--red-soft);
+  border-color: var(--red);
+}
+.story-score {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 96px;
+}
+.story-score strong {
+  font-size: 44px;
+  line-height: 1;
+  color: var(--ink);
+}
+.story-score span {
+  color: var(--muted);
+  font-size: 14px;
+}
+.story-grade h3 {
+  margin: 0 0 4px;
+  font-size: 17px;
+}
+.story-grade p {
+  margin: 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Score split bar */
+.score-bar {
+  display: flex;
+  height: 30px;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+}
+.score-bar .seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  min-width: 0;
+}
+.score-bar .seg.good {
+  background: var(--green);
+}
+.score-bar .seg.bad {
+  background: var(--red);
+}
+.score-bar .seg.muted {
+  background: #94a3b8;
+}
+
+.story-narrative p {
+  margin: 0 0 8px;
+  line-height: 1.6;
+  font-size: 13.5px;
+  color: #1f2937;
+}
+
+.story-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 12px;
+}
+.chart-sub {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* What to fix first */
+.fix-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.fix-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+.fix-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.fix-head strong {
+  font-size: 13px;
+}
+.fix-cat {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: auto;
+}
+.fix-reason {
+  margin: 0 0 5px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #1f2937;
+}
+.fix-why {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--teal);
+}
+.muted-note {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 10px 0;
+}
+
+/* Why? expandable row */
+.why-btn {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--teal);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.why-btn:hover {
+  background: var(--teal-soft);
+}
+tr.row-open td {
+  background: var(--teal-soft);
+}
+tr.why-detail td {
+  background: var(--surface-2);
+  padding: 12px 16px;
+}
+.why-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.why-grid p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #1f2937;
+}
+.why-grid strong {
+  color: var(--ink);
+}
+
+/* Methodology page */
+.method-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.method-block {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+.method-block:first-of-type {
+  border-top: 0;
+  margin-top: 0;
+}
+.method-block h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+.method-block p {
+  margin: 0 0 6px;
+  line-height: 1.6;
+  font-size: 13.5px;
+  color: #1f2937;
+}
+.method-now {
+  background: var(--teal-soft);
+  padding: 8px 12px;
+  border-radius: 4px;
+}
+.method-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.method-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  background: var(--surface-2);
+}
+.method-card p {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #1f2937;
+}
+.method-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.method-card-head strong {
+  font-size: 14px;
+}
+.method-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.method-plain {
+  font-weight: 600;
+  color: var(--ink) !important;
+}
+.method-action {
+  color: var(--teal) !important;
+}
+.method-limits {
+  margin: 0;
+  padding-left: 18px;
+}
+.method-limits li {
+  margin-bottom: 8px;
+  line-height: 1.6;
+  font-size: 13px;
+  color: #1f2937;
+}
+
+/* Campaign cards */
+.campaign-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.campaign-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+.campaign-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  background: var(--surface-2);
+}
+.campaign-card-top {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+.campaign-card-top strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.campaign-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+.campaign-problem {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #1f2937;
+}
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+.chip.good {
+  background: var(--green-soft);
+  color: #166534;
+  border-color: var(--green);
+}
+.chip.warn {
+  background: var(--amber-soft);
+  color: #92400e;
+  border-color: var(--amber);
+}
+.chip.bad {
+  background: var(--red-soft);
+  color: #991b1b;
+  border-color: var(--red);
+}
+.chip.amber {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #d97706;
+}
+.chip.slate {
+  background: var(--slate-soft);
+  color: #334155;
+}
+
+@media (max-width: 1080px) {
+  .story-charts {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 720px) {
+  .story-grade {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+}

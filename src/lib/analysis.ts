@@ -9,9 +9,12 @@ import {
   FileStatus,
   HistoryRow,
   MatchLevel,
+  Methodology,
+  MethodologyEntry,
   PerformanceAggregate,
   Priority,
   Recommendation,
+  RowExplain,
   TargetingRow,
   Thresholds,
 } from "./types";
@@ -241,8 +244,8 @@ export function analyzeFiles(
           `${unmatchedPerformanceRows.length.toLocaleString()} Sponsored Products target combinations did not match bid history in the selected window.`,
         ]
       : []),
-    "Current bid cannot be known for targets with no bid-change history unless a Bulk Operations file is added.",
-    "Profit-level recommendations need SKU margin, COGS, fees, and target ACoS by product.",
+    "If a target had no bid change in this file's date range, its current bid is unknown here. Upload a Bulk Operations file to fill in current bids and match more targets.",
+    "For true profit calls, add a break-even or target ACoS per product. Until then the tool uses one global target ACoS.",
   ];
 
   return {
@@ -255,6 +258,7 @@ export function analyzeFiles(
     unsupportedHistoryRows,
     unmatchedPerformanceRows,
     unmatchedHistoryRows,
+    methodology: getMethodology(thresholds),
     charts,
     warnings,
   };
@@ -466,6 +470,22 @@ function buildAuditRow(
     impact,
   });
 
+  const explain = buildExplain({
+    row: aggregate,
+    thresholds,
+    category: decision.category,
+    recommendation: decision.recommendation,
+    priority: decision.priority,
+    confidence: decision.confidence,
+    matchLevel: matched.level,
+    enoughData,
+    bidChanges,
+    bidChangePct,
+    previousBid,
+    latestBid,
+    impact,
+  });
+
   return {
     ...aggregate,
     matchLevel: matched.level,
@@ -482,7 +502,8 @@ function buildAuditRow(
     recommendation: decision.recommendation,
     priority: decision.priority,
     confidence: decision.confidence,
-    reason: decision.reason,
+    reason: explain.reason,
+    explain,
     priorityScore: decision.priorityScore,
     impact,
   };
@@ -644,6 +665,231 @@ function decide(input: {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Plain-English explanation engine. Every audited target gets a reason, the
+// exact rule + numbers behind it, and why the action / priority / confidence.
+// This is the single source of truth for the in-app "How decisions are made".
+// ---------------------------------------------------------------------------
+
+function money(n: number | null | undefined) {
+  return n === null || n === undefined || !Number.isFinite(n)
+    ? "$0.00"
+    : `$${n.toFixed(2)}`;
+}
+function pctText(n: number | null | undefined) {
+  return n === null || n === undefined || !Number.isFinite(n)
+    ? "no sales"
+    : `${(n * 100).toFixed(1)}%`;
+}
+
+/** Plain-language guide for every category, with the user's thresholds filled in. */
+function categoryGuide(t: Thresholds): Record<Category, MethodologyEntry> {
+  const tA = `${Math.round(t.targetAcos * 100)}%`;
+  const wasteA = `${Math.round(t.targetAcos * 150)}%`;
+  return {
+    "Winners Not Scaled": {
+      category: "Winners Not Scaled",
+      title: "Winners not scaled",
+      plain:
+        "A profitable target you are not pushing — the bid was not meaningfully raised.",
+      howDecided: `Profitable (ACoS ≤ target ${tA}, sales ≥ ${money(t.minSales)}, orders ≥ ${t.minOrders}) AND the most recent bid change was not a meaningful increase (more than +5%).`,
+      whyItMatters:
+        "These already make money. Not bidding them up leaves easy sales on the table.",
+      action: "Raise the bid in small steps and watch ACoS.",
+    },
+    "Losers Not Reduced": {
+      category: "Losers Not Reduced",
+      title: "Waste not reduced",
+      plain: "A money-losing target that was not cut — spend keeps leaking.",
+      howDecided: `Wasteful (spend ≥ ${money(t.minSpend)} with 0 orders, OR spend ≥ ${money(t.minSpend)} and ACoS ≥ ${wasteA} = 1.5× target) AND the most recent bid change was not a meaningful decrease (less than −5%).`,
+      whyItMatters: "This is spend with little or no return — pure leakage.",
+      action: "Lower the bid (or pause/review if there are zero orders).",
+    },
+    "Profitable Terms Reduced": {
+      category: "Profitable Terms Reduced",
+      title: "Profitable target was cut",
+      plain: "A target that was making money but the bid was reduced anyway.",
+      howDecided: `Profitable by the rule above, BUT the most recent bid change was a meaningful decrease (less than −5%).`,
+      whyItMatters: "Cutting a winner usually loses sales for no good reason.",
+      action: "Review the cut — likely raise the bid back up.",
+    },
+    "Unprofitable Terms Increased": {
+      category: "Unprofitable Terms Increased",
+      title: "Money-loser was bid up",
+      plain: "A target that was losing money but the bid was increased anyway.",
+      howDecided: `Wasteful by the rule above, BUT the most recent bid change was a meaningful increase (more than +5%).`,
+      whyItMatters: "Bidding up a loser accelerates wasted spend.",
+      action: "Reduce the bid (or pause/review).",
+    },
+    "No Action Despite Enough Data": {
+      category: "No Action Despite Enough Data",
+      title: "Enough data, but no matched history",
+      plain:
+        "This target had enough activity to judge, but we could not find its bid-change history in the file.",
+      howDecided: `Enough activity (clicks ≥ ${t.minClicks}, or spend ≥ ${money(t.minSpend)}, or orders ≥ ${t.minOrders}) but no matching bid-change row was found for it in the uploaded History window.`,
+      whyItMatters:
+        "It may have had no bid change, or names differ between the two files. A Bulk file fixes this.",
+      action: "Check the names, or upload a Bulk Operations file.",
+    },
+    "Too Many Bid Changes": {
+      category: "Too Many Bid Changes",
+      title: "Changed too often",
+      plain:
+        "The bid on this target was changed so often that no change had time to prove itself.",
+      howDecided: `3 or more bid changes on this target inside the uploaded window.`,
+      whyItMatters:
+        "Constant tweaking stops Amazon learning and makes results impossible to read.",
+      action:
+        "Hold — wait for about a week of clean data before moving it again.",
+    },
+    "Needs More Data": {
+      category: "Needs More Data",
+      title: "Not enough data yet",
+      plain: "Too little activity to make a safe bid decision.",
+      howDecided: `Below every action threshold (clicks < ${t.minClicks} and spend < ${money(t.minSpend)} and orders < ${t.minOrders}).`,
+      whyItMatters: "Acting on tiny samples is guessing, not optimizing.",
+      action: "Collect more data before changing the bid.",
+    },
+    "Correctly Managed": {
+      category: "Correctly Managed",
+      title: "Managed correctly",
+      plain: "The last bid move matched performance.",
+      howDecided: `Profitable and the bid was meaningfully raised, OR wasteful and the bid was meaningfully cut.`,
+      whyItMatters: "Confirms good decisions so you can focus on the problems.",
+      action: "Hold — keep doing this.",
+    },
+    Monitor: {
+      category: "Monitor",
+      title: "Stable — just monitor",
+      plain: "Not a clear winner or loser right now.",
+      howDecided: `Has enough data but does not meet the profitable or wasteful rules; performance is middling/stable.`,
+      whyItMatters: "Nothing urgent — watch in case it drifts.",
+      action: "Hold and keep an eye on it.",
+    },
+  };
+}
+
+export function getMethodology(t: Thresholds): Methodology {
+  const guide = categoryGuide(t);
+  return {
+    categories: [
+      "Winners Not Scaled",
+      "Losers Not Reduced",
+      "Profitable Terms Reduced",
+      "Unprofitable Terms Increased",
+      "Too Many Bid Changes",
+      "No Action Despite Enough Data",
+      "Needs More Data",
+      "Correctly Managed",
+      "Monitor",
+    ].map((c) => guide[c as Category]),
+    score: `Decision Score = (targets managed well ÷ targets we could grade) × 100. We only grade targets that matched bid history AND had enough data. Unmatched or thin-data targets are set aside, not counted, so the score reflects real decision quality — not file gaps.`,
+    priority: `Priority ranks what to fix first by money at stake (spend + sales), data strength, and how wrong the bid move was. Critical = big money + clear problem; High = important; Medium = worth doing; Low/Watch = minor or not enough data.`,
+    confidence: `High = strong name match and a full 7-day before/after window. Medium = matched but without match type, or an incomplete before/after window. Low = thin data. Review Only = no bid-history match, so it is shown for review, never as a confirmed mistake.`,
+    limitations: [
+      "If a target had no bid change inside the uploaded History window, it has no history row — so its current bid is unknown from this file alone. A Bulk Operations file lists every target's current bid and fixes this.",
+      "The Sponsored Products Targeting report has no campaign / ad-group / target IDs, so matching relies on names. Renames or structure differences cause some misses. A Bulk file (with IDs) raises the match rate.",
+      "Sponsored Brands rows are isolated unless an SB performance report is uploaded — they form a separate audit and do not change the SP match rate.",
+      "True profit needs a break-even or target ACoS per product. Without it the tool uses one global target ACoS as a placeholder.",
+    ],
+  };
+}
+
+interface ExplainInput {
+  row: PerformanceAggregate;
+  thresholds: Thresholds;
+  category: Category;
+  recommendation: Recommendation;
+  priority: Priority;
+  confidence: AuditRow["confidence"];
+  matchLevel: MatchLevel;
+  enoughData: boolean;
+  bidChanges: number;
+  bidChangePct: number | null;
+  previousBid: number | null;
+  latestBid: number | null;
+  impact: BeforeAfterImpact;
+}
+
+function targetLabel(row: PerformanceAggregate) {
+  const mt =
+    row.matchType && row.matchType !== "-" ? ` (${row.matchType})` : "";
+  return `“${row.targeting}”${mt} in ${row.campaign} › ${row.adGroup}`;
+}
+
+function buildExplain(input: ExplainInput): RowExplain {
+  const { row, category } = input;
+  const guide = categoryGuide(input.thresholds)[category];
+  const acos = pctText(row.acos);
+  const label = targetLabel(row);
+  const move =
+    input.bidChangePct === null
+      ? "no recorded bid change"
+      : `last bid move ${input.bidChangePct >= 0 ? "+" : ""}${(input.bidChangePct * 100).toFixed(0)}% (${money(input.previousBid)} → ${money(input.latestBid)})`;
+
+  const reasonByCategory: Record<Category, string> = {
+    "Winners Not Scaled": `${label} makes money — ${row.orders} orders, ${money(row.sales)} sales at ${acos} ACoS — but the bid was not meaningfully raised. You are likely leaving sales on the table.`,
+    "Losers Not Reduced":
+      row.orders === 0
+        ? `${label} spent ${money(row.spend)} with 0 orders and the bid was not cut — that is pure wasted spend.`
+        : `${label} is wasteful at ${acos} ACoS on ${money(row.spend)} spend and the bid was not cut.`,
+    "Profitable Terms Reduced": `${label} was profitable (${money(row.sales)} sales, ${acos} ACoS) yet the bid was reduced (${move}). That likely loses sales for no reason.`,
+    "Unprofitable Terms Increased": `${label} is losing money (${acos} ACoS, ${money(row.spend)} spend) yet the bid was increased (${move}). That speeds up the waste.`,
+    "No Action Despite Enough Data": `${label} had enough activity (${row.clicks} clicks, ${money(row.spend)} spend) but we could not find its bid-change history in the uploaded file — so we can't say if the bid was right.`,
+    "Too Many Bid Changes": `${label} had ${input.bidChanges} bid changes inside the window. That is too often — no change had time to prove itself, so the data is noisy.`,
+    "Needs More Data": `${label} only has ${row.clicks} clicks and ${money(row.spend)} spend — not enough to safely change the bid yet.`,
+    "Correctly Managed": `${label} was handled correctly: the ${move} matched its performance (${acos} ACoS).`,
+    Monitor: `${label} is stable — not a clear winner or loser at the moment (${acos} ACoS, ${money(row.spend)} spend). Nothing urgent.`,
+  };
+
+  const whyActionMap: Record<Recommendation, string> = {
+    "Increase bid":
+      "Raise the bid: it is profitable with room to win more clicks/sales.",
+    "Reduce bid": "Lower the bid: it is spending without enough return.",
+    "Pause / review": "Stop or hand-check it: high spend with no/poor return.",
+    Hold:
+      category === "Too Many Bid Changes"
+        ? "Leave it alone for now: it was changed too recently/often — wait for clean data."
+        : "Leave the bid as is: it is either already correct or stable.",
+    "Collect more data":
+      "Do not change the bid yet: there is not enough clicks/spend/orders to decide safely.",
+    "Review match":
+      "We could not match this target to bid history — check names or add a Bulk file before acting.",
+  };
+
+  const rule = `Rule: ${guide.howDecided}  ·  This target — ACoS ${acos}, sales ${money(row.sales)}, orders ${row.orders}, spend ${money(row.spend)}, clicks ${row.clicks}, bid changes ${input.bidChanges}, ${move}.`;
+
+  const moneyAtStake = money(row.spend + row.sales);
+  const whyPriority =
+    input.priority === "Watch"
+      ? "Priority is Watch because there is not enough data to act confidently."
+      : `Priority is ${input.priority}: ranked by money at stake (spend ${money(row.spend)} + sales ${money(row.sales)} = ${moneyAtStake}) and how clearly the rule was broken. More money + a clearer problem ⇒ higher priority.`;
+
+  let whyConfidence: string;
+  if (input.matchLevel === "Unmatched")
+    whyConfidence =
+      "Confidence: Review Only — no bid-history match, so this is shown for review, not as a confirmed mistake.";
+  else if (!input.enoughData)
+    whyConfidence = "Confidence: Low — not enough data to be sure.";
+  else if (input.matchLevel === "Medium no-match-type")
+    whyConfidence =
+      "Confidence: Medium — matched by name but without match type, so treat as review-level.";
+  else if (input.impact.status === "Full window")
+    whyConfidence =
+      "Confidence: High — strong name match and a full 7-day before/after window.";
+  else
+    whyConfidence =
+      "Confidence: Medium — matched well, but the before/after window is incomplete.";
+
+  return {
+    reason: reasonByCategory[category],
+    rule,
+    whyAction: whyActionMap[input.recommendation],
+    whyPriority,
+    whyConfidence,
+  };
+}
+
 function calculateBeforeAfter(
   aggregate: PerformanceAggregate,
   history: HistoryRow | null | undefined,
@@ -727,28 +973,39 @@ function summarize(
   ).length;
   const hasTag = (row: AuditRow, category: Category) =>
     row.category === category || row.secondaryTags.includes(category);
-  const rowsWithIssues = auditRows.filter((row) =>
-    [
-      "Winners Not Scaled",
-      "Losers Not Reduced",
-      "Profitable Terms Reduced",
-      "Unprofitable Terms Increased",
-      "Too Many Bid Changes",
-    ].includes(row.category),
-  ).length;
-  const actionableRows = auditRows.filter((row) =>
-    ["Increase bid", "Reduce bid", "Pause / review", "Review match"].includes(
-      row.recommendation,
-    ),
-  ).length;
-  const decisionScore = Math.max(
-    0,
-    Math.round(
-      100 -
-        (rowsWithIssues / Math.max(1, auditRows.length)) * 70 -
-        (actionableRows / Math.max(1, auditRows.length)) * 20,
-    ),
+  const ISSUE_CATS: Category[] = [
+    "Winners Not Scaled",
+    "Losers Not Reduced",
+    "Profitable Terms Reduced",
+    "Unprofitable Terms Increased",
+    "Too Many Bid Changes",
+  ];
+  const SET_ASIDE: Category[] = [
+    "Needs More Data",
+    "No Action Despite Enough Data",
+  ];
+  // We only grade targets we can actually judge: matched to bid history AND
+  // enough data. Unmatched / thin-data targets are set aside, not counted, so
+  // the score reflects real decision quality instead of file gaps.
+  const judgedRows = auditRows.filter(
+    (row) =>
+      row.matchLevel !== "Unmatched" && !SET_ASIDE.includes(row.category),
   );
+  const judged = judgedRows.length;
+  const issuesJudged = judgedRows.filter((row) =>
+    ISSUE_CATS.includes(row.category),
+  ).length;
+  const goodJudged = judged - issuesJudged;
+  const setAside = auditRows.length - judged;
+  const decisionScore =
+    judged === 0 ? 0 : Math.round((goodJudged / judged) * 100);
+  const scoreBreakdown = {
+    judged,
+    good: goodJudged,
+    issues: issuesJudged,
+    setAside,
+    formula: `${goodJudged} of ${judged} gradeable targets look correctly managed → ${decisionScore}/100. ${setAside} targets were set aside (no bid-history match or not enough data) and were not graded.`,
+  };
 
   return {
     totalTargets: auditRows.length,
@@ -800,6 +1057,7 @@ function summarize(
       )
       .reduce((total, row) => total + row.sales, 0),
     decisionScore,
+    scoreBreakdown,
   };
 }
 

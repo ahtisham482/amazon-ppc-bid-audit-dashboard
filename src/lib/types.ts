@@ -139,6 +139,20 @@ export interface BeforeAfterImpact {
   postDays: number;
 }
 
+/** Plain-English explanation attached to every audited target. */
+export interface RowExplain {
+  /** One simple sentence naming the target and what is going on. */
+  reason: string;
+  /** The exact rule + thresholds + the target's real numbers that triggered it. */
+  rule: string;
+  /** Why this recommended action, in plain words. */
+  whyAction: string;
+  /** Why this priority level. */
+  whyPriority: string;
+  /** Why this confidence level. */
+  whyConfidence: string;
+}
+
 export interface AuditRow extends PerformanceAggregate {
   matchLevel: MatchLevel;
   latestHistory: HistoryRow | null;
@@ -153,6 +167,7 @@ export interface AuditRow extends PerformanceAggregate {
   priority: Priority;
   confidence: "High" | "Medium" | "Low" | "Review Only";
   reason: string;
+  explain: RowExplain;
   priorityScore: number;
   impact: BeforeAfterImpact;
 }
@@ -177,6 +192,39 @@ export interface Summary {
   estimatedWastedSpend: number;
   estimatedMissedSales: number;
   decisionScore: number;
+  scoreBreakdown: ScoreBreakdown;
+}
+
+/** The visible math behind the Decision Score so it is not a black box. */
+export interface ScoreBreakdown {
+  /** Targets we could actually grade (matched + enough data). */
+  judged: number;
+  /** Of judged: decisions that look correct (Correctly Managed / Monitor). */
+  good: number;
+  /** Of judged: targets with a real bid-management problem. */
+  issues: number;
+  /** Targets set aside (unmatched or not enough data) — not graded. */
+  setAside: number;
+  /** Plain-English description of how the score was computed. */
+  formula: string;
+}
+
+/** Plain-language description of one audit category, used by the in-app guide. */
+export interface MethodologyEntry {
+  category: Category;
+  title: string;
+  plain: string;
+  howDecided: string;
+  whyItMatters: string;
+  action: string;
+}
+
+export interface Methodology {
+  categories: MethodologyEntry[];
+  score: string;
+  priority: string;
+  confidence: string;
+  limitations: string[];
 }
 
 export interface CampaignSummary {
@@ -205,13 +253,31 @@ export interface AnalysisResult {
   unsupportedHistoryRows: HistoryRow[];
   unmatchedPerformanceRows: AuditRow[];
   unmatchedHistoryRows: HistoryRow[];
+  methodology: Methodology;
   charts: {
     priorityBreakdown: Array<{ name: string; value: number }>;
     categoryBreakdown: Array<{ name: string; value: number }>;
-    scatter: Array<{ name: string; acos: number; bidChange: number; spend: number; category: string }>;
-    spendSales: Array<{ name: string; spend: number; sales: number; category: string }>;
+    scatter: Array<{
+      name: string;
+      acos: number;
+      bidChange: number;
+      spend: number;
+      category: string;
+    }>;
+    spendSales: Array<{
+      name: string;
+      spend: number;
+      sales: number;
+      category: string;
+    }>;
     campaignHeatmap: CampaignSummary[];
-    beforeAfter: Array<{ name: string; preAcos: number | null; postAcos: number | null; preSales: number; postSales: number }>;
+    beforeAfter: Array<{
+      name: string;
+      preAcos: number | null;
+      postAcos: number | null;
+      preSales: number;
+      postSales: number;
+    }>;
   };
   warnings: string[];
 }

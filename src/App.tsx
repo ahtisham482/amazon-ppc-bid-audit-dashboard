@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { Fragment, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -10,6 +10,7 @@ import {
   FileSpreadsheet,
   Filter,
   Flame,
+  HelpCircle,
   Layers3,
   LineChart,
   RefreshCw,
@@ -24,10 +25,9 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  LabelList,
   Legend,
   ResponsiveContainer,
-  Scatter,
-  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
@@ -65,7 +65,8 @@ type Section =
   | "Wrong Bids"
   | "Frequency"
   | "Campaigns"
-  | "Data Quality";
+  | "Data Quality"
+  | "How it works";
 
 const sections: Array<{ id: Section; icon: typeof Activity }> = [
   { id: "Executive", icon: Activity },
@@ -76,7 +77,20 @@ const sections: Array<{ id: Section; icon: typeof Activity }> = [
   { id: "Frequency", icon: RefreshCw },
   { id: "Campaigns", icon: BarChart3 },
   { id: "Data Quality", icon: ShieldCheck },
+  { id: "How it works", icon: HelpCircle },
 ];
+
+// Plain-English explainer shown at the top of each focused tab.
+const sectionIntro: Partial<Record<Section, string>> = {
+  Winners:
+    "Targets that already make money but the bid was not meaningfully raised — you are likely leaving sales on the table. Decided by: profitable (ACoS ≤ target, enough sales & orders) AND no recent meaningful bid increase.",
+  Waste:
+    "Targets that lose money but the bid was not cut — spend keeps leaking. Decided by: wasteful (spend with zero orders, or ACoS ≥ 1.5× target) AND no recent meaningful bid decrease.",
+  "Wrong Bids":
+    "Bid moves that went the wrong way: a profitable target was cut, or a money-loser was bid up. Decided by: the most recent bid change direction contradicts the target's performance.",
+  Frequency:
+    "Targets changed so often that no change had time to prove itself, so the numbers are noisy. Decided by: 3 or more bid changes on the same target inside the uploaded window.",
+};
 
 const categoryColors: Record<string, string> = {
   "Winners Not Scaled": "#0F766E",
@@ -553,7 +567,8 @@ function Dashboard({
       )}
       {activeSection !== "Executive" &&
         activeSection !== "Campaigns" &&
-        activeSection !== "Data Quality" && (
+        activeSection !== "Data Quality" &&
+        activeSection !== "How it works" && (
           <ActionView
             rows={rows}
             activeSection={activeSection}
@@ -566,6 +581,7 @@ function Dashboard({
       {activeSection === "Data Quality" && (
         <DataQuality result={result} onExport={onExport} />
       )}
+      {activeSection === "How it works" && <Methodology result={result} />}
     </div>
   );
 }
@@ -670,6 +686,42 @@ function KpiGrid({ result }: { result: AnalysisResult }) {
   );
 }
 
+function gradeFor(score: number) {
+  if (score >= 80) return { label: "Strong", tone: "good" };
+  if (score >= 60) return { label: "Fair", tone: "amber" };
+  if (score >= 40) return { label: "Needs work", tone: "warn" };
+  return { label: "Poor", tone: "bad" };
+}
+
+function storyParagraph(result: AnalysisResult, thresholds: Thresholds) {
+  const s = result.summary;
+  const b = s.scoreBreakdown;
+  const parts: string[] = [];
+  parts.push(
+    `Using a ${percent(thresholds.targetAcos, 0)} target ACoS (${thresholds.mode.toLowerCase()} mode), we could grade ${number(b.judged)} of ${number(s.totalTargets)} targets. ${number(b.setAside)} were set aside because they had no bid-history match or too little data, so they are not counted in the score.`,
+  );
+  parts.push(
+    `Of the ${number(b.judged)} graded, ${number(b.good)} look correctly managed and ${number(b.issues)} have a problem.`,
+  );
+  const probs: string[] = [];
+  if (s.winnersNotScaled)
+    probs.push(
+      `${s.winnersNotScaled} winner(s) are not being scaled (~${money(s.estimatedMissedSales)} of sales left on the table)`,
+    );
+  if (s.losersNotReduced)
+    probs.push(
+      `${s.losersNotReduced} money-loser(s) were not cut (~${money(s.estimatedWastedSpend)} leaking)`,
+    );
+  const wrong = s.wrongIncreases + s.wrongReductions;
+  if (wrong) probs.push(`${wrong} bid change(s) went the wrong direction`);
+  if (s.tooManyBidChanges)
+    probs.push(
+      `${s.tooManyBidChanges} target(s) were changed too often to read clearly`,
+    );
+  if (probs.length) parts.push(`The biggest issues: ${probs.join("; ")}.`);
+  return parts;
+}
+
 function ExecutiveView({
   result,
   thresholds,
@@ -679,16 +731,22 @@ function ExecutiveView({
   thresholds: Thresholds;
   onExport: (kind: string) => void;
 }) {
+  const s = result.summary;
+  const b = s.scoreBreakdown;
+  const grade = gradeFor(s.decisionScore);
+  const total = Math.max(1, b.judged + b.setAside);
+  const topFixes = result.auditRows
+    .filter((row) => row.priority === "Critical" || row.priority === "High")
+    .sort((a, b2) => b2.priorityScore - a.priorityScore)
+    .slice(0, 6);
+
   return (
     <div className="executive-grid">
-      <section className="panel wide">
+      <section className="panel wide story">
         <div className="panel-header">
           <div>
-            <h2>Decision quality story</h2>
-            <p>
-              Target ACoS is set to {percent(thresholds.targetAcos, 0)} using{" "}
-              {thresholds.mode.toLowerCase()} thresholds.
-            </p>
+            <h2>Your account's bid-management story</h2>
+            <p>Plain-English summary anyone on your team can read.</p>
           </div>
           <button
             className="button ghost"
@@ -698,38 +756,99 @@ function ExecutiveView({
             Summary
           </button>
         </div>
-        <Charts result={result} />
+
+        <div className={`story-grade ${grade.tone}`}>
+          <div className="story-score">
+            <strong>{s.decisionScore}</strong>
+            <span>/ 100</span>
+          </div>
+          <div>
+            <h3>Bid-management health: {grade.label}</h3>
+            <p>{b.formula}</p>
+          </div>
+        </div>
+
+        <div
+          className="score-bar"
+          title="How the graded targets split"
+          aria-label="Score breakdown"
+        >
+          <span
+            className="seg good"
+            style={{ width: `${(b.good / total) * 100}%` }}
+          >
+            {b.good > 0 && `${b.good} managed well`}
+          </span>
+          <span
+            className="seg bad"
+            style={{ width: `${(b.issues / total) * 100}%` }}
+          >
+            {b.issues > 0 && `${b.issues} with a problem`}
+          </span>
+          <span
+            className="seg muted"
+            style={{ width: `${(b.setAside / total) * 100}%` }}
+          >
+            {b.setAside > 0 && `${b.setAside} set aside (not graded)`}
+          </span>
+        </div>
+
+        <div className="story-narrative">
+          {storyParagraph(result, thresholds).map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+        </div>
+
+        <StoryCharts result={result} />
       </section>
+
       <section className="panel">
         <div className="panel-header">
           <div>
-            <h2>What needs attention</h2>
-            <p>Plain-English audit signals</p>
+            <h2>What to fix first</h2>
+            <p>The highest-impact problems, in order.</p>
           </div>
         </div>
-        <div className="insight-list">
-          {result.warnings.map((warning) => (
-            <div className="insight warning" key={warning}>
-              <AlertTriangle size={17} />
-              {warning}
-            </div>
-          ))}
-          {topReasons(result.auditRows).map((row) => (
+        <div className="fix-list">
+          {topFixes.length === 0 && (
+            <p className="muted-note">
+              No high-priority problems found with the current thresholds. 🎉
+            </p>
+          )}
+          {topFixes.map((row) => (
             <div
-              className="insight"
+              className="fix-card"
               key={`${row.campaign}-${row.targeting}-${row.category}`}
             >
-              <Flame size={17} />
-              <span>{row.reason}</span>
+              <div className="fix-head">
+                <Badge tone={priorityTone(row.priority)}>{row.priority}</Badge>
+                <strong>{row.recommendation}</strong>
+                <span className="fix-cat">{row.category}</span>
+              </div>
+              <p className="fix-reason">{row.explain.reason}</p>
+              <p className="fix-why">
+                <Flame size={13} /> {row.explain.whyAction}
+              </p>
             </div>
           ))}
         </div>
+        {result.warnings.length > 0 && (
+          <div className="insight-list">
+            {result.warnings.map((warning) => (
+              <div className="insight warning" key={warning}>
+                <AlertTriangle size={16} />
+                {warning}
+              </div>
+            ))}
+          </div>
+        )}
       </section>
+
       <section className="panel full">
         <div className="panel-header">
           <div>
             <h2>Highest-priority actions</h2>
-            <p>Sorted by financial impact, confidence, and urgency.</p>
+            <p>Click any row's “Why?” to see the exact rule and numbers.</p>
           </div>
           <button className="button ghost" onClick={() => onExport("actions")}>
             <Download size={16} />
@@ -747,108 +866,82 @@ function ExecutiveView({
   );
 }
 
-function Charts({ result }: { result: AnalysisResult }) {
+function StoryCharts({ result }: { result: AnalysisResult }) {
+  const issueCats = new Set([
+    "Winners Not Scaled",
+    "Losers Not Reduced",
+    "Profitable Terms Reduced",
+    "Unprofitable Terms Increased",
+    "Too Many Bid Changes",
+  ]);
+  const problemsByType = result.charts.categoryBreakdown
+    .filter((d) => issueCats.has(d.name))
+    .sort((a, b) => b.value - a.value);
+  const campaignProblems = result.campaignSummary
+    .filter((c) => c.issueCount > 0)
+    .slice()
+    .sort((a, b) => b.issueCount - a.issueCount)
+    .slice(0, 8)
+    .map((c) => ({ name: c.campaign, value: c.issueCount }));
+
   return (
-    <div className="charts-grid">
+    <div className="story-charts">
       <div className="chart-box">
-        <h3>ACoS vs bid action</h3>
-        <ResponsiveContainer width="100%" height={260}>
-          <ScatterChart margin={{ top: 10, right: 16, bottom: 20, left: 0 }}>
-            <CartesianGrid stroke="#E5E7EB" />
-            <XAxis
-              type="number"
-              dataKey="acos"
-              tickCount={5}
-              tickFormatter={(v) => `${Math.round(v * 100)}%`}
-              name="ACoS"
-            />
+        <h3>Problems by type</h3>
+        <p className="chart-sub">How many targets fall into each problem.</p>
+        <ResponsiveContainer width="100%" height={210}>
+          <BarChart
+            data={problemsByType}
+            layout="vertical"
+            margin={{ top: 4, right: 40, bottom: 4, left: 130 }}
+          >
+            <CartesianGrid stroke="#E5E7EB" horizontal={false} />
+            <XAxis type="number" allowDecimals={false} />
             <YAxis
-              type="number"
-              dataKey="bidChange"
-              tickCount={5}
-              tickFormatter={(v) => `${Math.round(v * 100)}%`}
-              name="Bid change"
+              type="category"
+              dataKey="name"
+              width={128}
+              tick={{ fontSize: 12 }}
             />
-            <Tooltip
-              formatter={(value: number, name) =>
-                name === "acos" || name === "bidChange"
-                  ? percent(value, 1)
-                  : money2(value)
-              }
-            />
-            <Scatter data={result.charts.scatter}>
-              {result.charts.scatter.map((entry, index) => (
-                <Cell
-                  key={index}
-                  fill={categoryColors[entry.category] ?? "#475569"}
-                />
-              ))}
-            </Scatter>
-          </ScatterChart>
-        </ResponsiveContainer>
-      </div>
-      <div className="chart-box">
-        <h3>Spend vs sales</h3>
-        <ResponsiveContainer width="100%" height={260}>
-          <ScatterChart margin={{ top: 10, right: 16, bottom: 20, left: 0 }}>
-            <CartesianGrid stroke="#E5E7EB" />
-            <XAxis
-              type="number"
-              dataKey="spend"
-              tickCount={5}
-              tickFormatter={(v) => `$${Math.round(v)}`}
-            />
-            <YAxis
-              type="number"
-              dataKey="sales"
-              tickCount={5}
-              tickFormatter={(v) => `$${Math.round(v)}`}
-            />
-            <Tooltip formatter={(value: number) => money2(value)} />
-            <Scatter data={result.charts.spendSales}>
-              {result.charts.spendSales.map((entry, index) => (
-                <Cell
-                  key={index}
-                  fill={categoryColors[entry.category] ?? "#475569"}
-                />
-              ))}
-            </Scatter>
-          </ScatterChart>
-        </ResponsiveContainer>
-      </div>
-      <div className="chart-box">
-        <h3>Priority breakdown</h3>
-        <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={result.charts.priorityBreakdown}>
-            <CartesianGrid stroke="#E5E7EB" vertical={false} />
-            <XAxis dataKey="name" />
-            <YAxis />
             <Tooltip />
-            <Bar dataKey="value" radius={[6, 6, 0, 0]} fill="#0F766E" />
+            <Bar dataKey="value" radius={[0, 6, 6, 0]}>
+              {problemsByType.map((entry) => (
+                <Cell
+                  key={entry.name}
+                  fill={categoryColors[entry.name] ?? "#475569"}
+                />
+              ))}
+              <LabelList dataKey="value" position="right" />
+            </Bar>
           </BarChart>
         </ResponsiveContainer>
       </div>
       <div className="chart-box">
-        <h3>Before/after impact</h3>
-        <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={result.charts.beforeAfter}>
-            <CartesianGrid stroke="#E5E7EB" vertical={false} />
-            <XAxis dataKey="name" hide />
-            <YAxis tickFormatter={(v) => `${Math.round(v * 100)}%`} />
-            <Tooltip formatter={(value: number) => percent(value, 1)} />
-            <Legend />
-            <Bar
-              dataKey="preAcos"
-              name="Pre ACoS"
-              fill="#94A3B8"
-              radius={[6, 6, 0, 0]}
+        <h3>Campaigns with the most problems</h3>
+        <p className="chart-sub">Where to focus your clean-up first.</p>
+        <ResponsiveContainer width="100%" height={210}>
+          <BarChart
+            data={campaignProblems}
+            layout="vertical"
+            margin={{ top: 4, right: 40, bottom: 4, left: 130 }}
+          >
+            <CartesianGrid stroke="#E5E7EB" horizontal={false} />
+            <XAxis type="number" allowDecimals={false} />
+            <YAxis
+              type="category"
+              dataKey="name"
+              width={128}
+              tick={{ fontSize: 11 }}
             />
+            <Tooltip />
             <Bar
-              dataKey="postAcos"
-              name="Post ACoS"
-              fill="#0F766E"
-              radius={[6, 6, 0, 0]}
-            />
+              dataKey="value"
+              radius={[0, 6, 6, 0]}
+              fill="#92400E"
+              name="Problem targets"
+            >
+              <LabelList dataKey="value" position="right" />
+            </Bar>
           </BarChart>
         </ResponsiveContainer>
       </div>
@@ -872,8 +965,12 @@ function ActionView({
           <h2>
             {activeSection === "Actions" ? "Action dashboard" : activeSection}
           </h2>
+          {sectionIntro[activeSection] && (
+            <p className="section-intro">{sectionIntro[activeSection]}</p>
+          )}
           <p>
-            {rows.length.toLocaleString()} target combinations match this view.
+            {rows.length.toLocaleString()} target combinations in this view ·
+            click any “Why?” for the exact rule and numbers.
           </p>
         </div>
         <div className="export-row">
@@ -905,6 +1002,7 @@ function ActionTable({
   const [sort, setSort] = useState<
     "priorityScore" | "spend" | "sales" | "acos" | "bidChanges"
   >("priorityScore");
+  const [openRow, setOpenRow] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     return rows
@@ -987,56 +1085,114 @@ function ActionTable({
               <th>Bid</th>
               <th>Changes</th>
               <th>Confidence</th>
+              <th>Why?</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.slice(0, compact ? 18 : 500).map((row) => (
-              <tr
-                key={`${row.campaign}-${row.adGroup}-${row.targeting}-${row.matchType}`}
-              >
-                <td>
-                  <Badge tone={priorityTone(row.priority)}>
-                    {row.priority}
-                  </Badge>
-                </td>
-                <td>
-                  <strong>{row.recommendation}</strong>
-                  <small>{row.category}</small>
-                </td>
-                <td className="reason-cell">{row.reason}</td>
-                <td>
-                  <span>{row.campaign}</span>
-                  <small>{row.adGroup}</small>
-                </td>
-                <td>
-                  <span>{row.targeting}</span>
-                  <small>{row.matchType}</small>
-                </td>
-                <td>{money2(row.spend)}</td>
-                <td>{money2(row.sales)}</td>
-                <td>{number(row.orders)}</td>
-                <td>{percent(row.acos)}</td>
-                <td>
-                  <span>
-                    {money2(row.previousBid)} → {money2(row.latestBid)}
-                  </span>
-                  <small>{percent(row.bidChangePct)}</small>
-                </td>
-                <td>
-                  <span>{row.bidChanges}</span>
-                  <small>{dateShort(row.lastBidChangeDate)}</small>
-                </td>
-                <td>
-                  <Badge tone="slate">{row.confidence}</Badge>
-                  <small>{row.matchLevel}</small>
-                </td>
-              </tr>
-            ))}
+            {filtered.slice(0, compact ? 18 : 500).map((row) => {
+              const rowKey = `${row.campaign}-${row.adGroup}-${row.targeting}-${row.matchType}`;
+              const isOpen = openRow === rowKey;
+              return (
+                <Fragment key={rowKey}>
+                  <tr className={isOpen ? "row-open" : undefined}>
+                    <td>
+                      <Badge tone={priorityTone(row.priority)}>
+                        {row.priority}
+                      </Badge>
+                    </td>
+                    <td>
+                      <strong>{row.recommendation}</strong>
+                      <small>{row.category}</small>
+                    </td>
+                    <td className="reason-cell">{row.reason}</td>
+                    <td>
+                      <span>{row.campaign}</span>
+                      <small>{row.adGroup}</small>
+                    </td>
+                    <td>
+                      <span>{row.targeting}</span>
+                      <small>{row.matchType}</small>
+                    </td>
+                    <td>{money2(row.spend)}</td>
+                    <td>{money2(row.sales)}</td>
+                    <td>{number(row.orders)}</td>
+                    <td>{percent(row.acos)}</td>
+                    <td>
+                      <span>
+                        {money2(row.previousBid)} → {money2(row.latestBid)}
+                      </span>
+                      <small>{percent(row.bidChangePct)}</small>
+                    </td>
+                    <td>
+                      <span>{row.bidChanges}</span>
+                      <small>{dateShort(row.lastBidChangeDate)}</small>
+                    </td>
+                    <td>
+                      <Badge tone="slate">{row.confidence}</Badge>
+                      <small>{row.matchLevel}</small>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="why-btn"
+                        aria-expanded={isOpen}
+                        onClick={() => setOpenRow(isOpen ? null : rowKey)}
+                      >
+                        {isOpen ? "Hide" : "Why?"}
+                      </button>
+                    </td>
+                  </tr>
+                  {isOpen && (
+                    <tr className="why-detail">
+                      <td colSpan={13}>
+                        <div className="why-grid">
+                          <p>
+                            <strong>What:</strong> {row.explain.reason}
+                          </p>
+                          <p>
+                            <strong>How it was decided:</strong>{" "}
+                            {row.explain.rule}
+                          </p>
+                          <p>
+                            <strong>Why this action:</strong>{" "}
+                            {row.explain.whyAction}
+                          </p>
+                          <p>
+                            <strong>Why this priority:</strong>{" "}
+                            {row.explain.whyPriority}
+                          </p>
+                          <p>
+                            <strong>Why this confidence:</strong>{" "}
+                            {row.explain.whyConfidence}
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
     </div>
   );
+}
+
+function campaignProblemLine(c: CampaignSummary) {
+  const items: Array<[number, string]> = [
+    [c.tooManyBidChanges, "changed too often"],
+    [c.wrongBidChanges, "bid moves in the wrong direction"],
+    [c.losersNotReduced, "money-losers not cut"],
+    [c.winnersNotScaled, "winners not scaled up"],
+  ];
+  const worst = items.filter(([n]) => n > 0).sort((a, b) => b[0] - a[0])[0];
+  if (!worst) {
+    return c.unmatched > 0
+      ? `No clear problems — but ${c.unmatched} target(s) here could not be matched to bid history.`
+      : "No clear bid-management problems in this campaign.";
+  }
+  return `Main issue: ${worst[0]} target(s) ${worst[1]}.`;
 }
 
 function CampaignView({
@@ -1046,73 +1202,110 @@ function CampaignView({
   result: AnalysisResult;
   onExport: (kind: string) => void;
 }) {
+  const campaigns = result.campaignSummary
+    .slice()
+    .sort((a, b) => b.issueCount - a.issueCount)
+    .slice(0, 18);
+
   return (
-    <section className="panel full">
-      <div className="panel-header">
-        <div>
-          <h2>Campaign breakdown</h2>
-          <p>Issue concentration by campaign and ad group.</p>
+    <div className="campaign-page">
+      <section className="panel full">
+        <div className="panel-header">
+          <div>
+            <h2>Campaign breakdown</h2>
+            <p>
+              Campaigns sorted by how many problems they have. Start at the top.
+            </p>
+          </div>
+          <button
+            className="button ghost"
+            onClick={() => onExport("campaigns")}
+          >
+            <Download size={16} />
+            Campaign CSV
+          </button>
         </div>
-        <button className="button ghost" onClick={() => onExport("campaigns")}>
-          <Download size={16} />
-          Campaign CSV
-        </button>
-      </div>
-      <div className="campaign-grid">
-        <div className="chart-box heatmap">
-          <h3>Campaign issue heatmap</h3>
-          <div className="heatmap-table">
-            {result.campaignSummary.slice(0, 22).map((row) => (
-              <div className="heatmap-row" key={row.campaign}>
-                <span>{row.campaign}</span>
-                <Meter value={row.winnersNotScaled} max={8} color="#0F766E" />
-                <Meter value={row.losersNotReduced} max={8} color="#B45309" />
-                <Meter value={row.wrongBidChanges} max={8} color="#DC2626" />
-                <Meter value={row.tooManyBidChanges} max={14} color="#92400E" />
-                <strong>{money(row.spend)}</strong>
+        <div className="campaign-cards">
+          {campaigns.map((c) => (
+            <div className="campaign-card" key={c.campaign}>
+              <div className="campaign-card-top">
+                <strong title={c.campaign}>{c.campaign}</strong>
+                <span className="campaign-meta">
+                  {money(c.spend)} spend · {percent(c.acos)} ACoS ·{" "}
+                  {number(c.targets)} targets
+                </span>
               </div>
-            ))}
+              <p className="campaign-problem">{campaignProblemLine(c)}</p>
+              <div className="chip-row">
+                {c.winnersNotScaled > 0 && (
+                  <span className="chip good">
+                    {c.winnersNotScaled} winners not scaled
+                  </span>
+                )}
+                {c.losersNotReduced > 0 && (
+                  <span className="chip warn">
+                    {c.losersNotReduced} waste not cut
+                  </span>
+                )}
+                {c.wrongBidChanges > 0 && (
+                  <span className="chip bad">
+                    {c.wrongBidChanges} wrong-direction
+                  </span>
+                )}
+                {c.tooManyBidChanges > 0 && (
+                  <span className="chip amber">
+                    {c.tooManyBidChanges} over-managed
+                  </span>
+                )}
+                {c.unmatched > 0 && (
+                  <span className="chip slate">{c.unmatched} unmatched</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel full">
+        <div className="panel-header">
+          <div>
+            <h2>Ad groups with the most problems</h2>
+            <p>The same view, one level deeper.</p>
           </div>
         </div>
-        <SummaryTable rows={result.campaignSummary} title="Campaigns" />
-        <SummaryTable rows={result.adGroupSummary} title="Ad groups" />
-      </div>
-    </section>
-  );
-}
-
-function SummaryTable({
-  rows,
-  title,
-}: {
-  rows: CampaignSummary[];
-  title: string;
-}) {
-  return (
-    <div className="summary-table">
-      <h3>{title}</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Spend</th>
-            <th>ACoS</th>
-            <th>Issues</th>
-            <th>Unmatched</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 16).map((row) => (
-            <tr key={row.campaign}>
-              <td>{row.campaign}</td>
-              <td>{money(row.spend)}</td>
-              <td>{percent(row.acos)}</td>
-              <td>{row.issueCount}</td>
-              <td>{row.unmatched}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+        <div className="table-wrap">
+          <table className="audit-table">
+            <thead>
+              <tr>
+                <th>Ad group</th>
+                <th>Spend</th>
+                <th>ACoS</th>
+                <th>Targets</th>
+                <th>Problems</th>
+                <th>Unmatched</th>
+                <th>Main issue</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result.adGroupSummary
+                .slice()
+                .sort((a, b) => b.issueCount - a.issueCount)
+                .slice(0, 20)
+                .map((row) => (
+                  <tr key={row.campaign}>
+                    <td>{row.campaign}</td>
+                    <td>{money(row.spend)}</td>
+                    <td>{percent(row.acos)}</td>
+                    <td>{number(row.targets)}</td>
+                    <td>{row.issueCount}</td>
+                    <td>{row.unmatched}</td>
+                    <td className="reason-cell">{campaignProblemLine(row)}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 }
@@ -1222,6 +1415,88 @@ function FileStatusBlock({
           ))}
         </div>
       </details>
+    </div>
+  );
+}
+
+function Methodology({ result }: { result: AnalysisResult }) {
+  const m = result.methodology;
+  return (
+    <div className="method-page">
+      <section className="panel full">
+        <div className="panel-header">
+          <div>
+            <h2>How decisions are made</h2>
+            <p>
+              Every recommendation in this tool follows the fixed rules below.
+              Nothing is a guess — show this page to anyone who asks “why?”.
+            </p>
+          </div>
+        </div>
+        <div className="method-block">
+          <h3>The Decision Score</h3>
+          <p>{m.score}</p>
+          <p className="method-now">
+            <strong>Right now:</strong> {result.summary.scoreBreakdown.formula}
+          </p>
+        </div>
+        <div className="method-block">
+          <h3>Priority — what to fix first</h3>
+          <p>{m.priority}</p>
+        </div>
+        <div className="method-block">
+          <h3>Confidence — how sure we are</h3>
+          <p>{m.confidence}</p>
+        </div>
+      </section>
+
+      <section className="panel full">
+        <div className="panel-header">
+          <div>
+            <h2>Every category, explained</h2>
+            <p>Exactly how each label is decided and why it matters.</p>
+          </div>
+        </div>
+        <div className="method-grid">
+          {m.categories.map((c) => (
+            <div className="method-card" key={c.category}>
+              <div className="method-card-head">
+                <span
+                  className="method-dot"
+                  style={{
+                    background: categoryColors[c.category] ?? "#475569",
+                  }}
+                />
+                <strong>{c.title}</strong>
+              </div>
+              <p className="method-plain">{c.plain}</p>
+              <p>
+                <strong>How it’s decided:</strong> {c.howDecided}
+              </p>
+              <p>
+                <strong>Why it matters:</strong> {c.whyItMatters}
+              </p>
+              <p className="method-action">
+                <strong>What to do:</strong> {c.action}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel full">
+        <div className="panel-header">
+          <div>
+            <h2>Limits of this data (read before trusting blindly)</h2>
+            <p>What these two files can and cannot tell you.</p>
+          </div>
+        </div>
+        <ul className="method-limits">
+          {m.limitations.map((l) => (
+            <li key={l}>{l}</li>
+          ))}
+        </ul>
+      </section>
     </div>
   );
 }
