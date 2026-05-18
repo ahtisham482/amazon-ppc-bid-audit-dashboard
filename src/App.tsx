@@ -126,6 +126,7 @@ export default function App() {
   const [activeSection, setActiveSection] = useState<Section>("Action Plan");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showUploads, setShowUploads] = useState(true);
 
   // One entry point for every upload. It detects what the file is from its
   // contents and routes it — so it never matters which box you use. The two
@@ -223,6 +224,7 @@ export default function App() {
           buildOpts(),
         ),
       );
+      setShowUploads(false);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Unable to analyze the files.",
@@ -302,57 +304,84 @@ export default function App() {
           </div>
         </header>
 
-        <section className="upload-grid" aria-label="Upload reports">
-          <FileDrop
-            title="1 · Bid-Change History"
-            description="Amazon Ads History export (CSV)"
-            tag="Required"
-            info={historyInfo}
-            busy={isLoading}
-            onFile={ingest}
-          />
-          <FileDrop
-            title="2 · SP Targeting report"
-            description="Sponsored Products Targeting (XLSX)"
-            tag="Required"
-            info={targetingInfo}
-            busy={isLoading}
-            onFile={ingest}
-          />
-          <FileDrop
-            title="3 · SB report"
-            description="Sponsored Brands performance (XLSX)"
-            tag="Optional"
-            info={sbInfo}
-            busy={isLoading}
-            onFile={ingest}
-          />
-          <FileDrop
-            title="4 · Bulk file"
-            description="Amazon Bulk Operations (XLSX) — adds current bids"
-            tag="Optional"
-            info={bulkInfo}
-            busy={isLoading}
-            onFile={ingest}
-          />
-          <FileDrop
-            title="5 · Target-ACoS map"
-            description="Campaign → Target ACoS (CSV) — per-campaign goals"
-            tag="Optional"
-            info={acosInfo}
-            busy={isLoading}
-            onFile={ingest}
-          />
+        <section className="uploads-block" aria-label="Upload reports">
+          {result && (
+            <button
+              type="button"
+              className="uploads-toggle"
+              onClick={() => setShowUploads((v) => !v)}
+              aria-expanded={showUploads}
+            >
+              {showUploads ? "▾" : "▸"} Reports loaded
+              <small>
+                History {number(historyInfo?.rows ?? 0)} · SP{" "}
+                {number(targetingInfo?.rows ?? 0)} rows
+                {sbInfo ? " · SB ✓" : ""}
+                {bulkInfo ? " · Bulk ✓" : ""}
+                {acosInfo ? " · ACoS map ✓" : ""} — click to change files or
+                settings
+              </small>
+            </button>
+          )}
+          {showUploads && (
+            <>
+              <div className="upload-grid">
+                <FileDrop
+                  title="1 · History"
+                  description="Amazon Ads History export"
+                  tag="Required"
+                  info={historyInfo}
+                  busy={isLoading}
+                  onFile={ingest}
+                />
+                <FileDrop
+                  title="2 · SP Targeting"
+                  description="Sponsored Products report"
+                  tag="Required"
+                  info={targetingInfo}
+                  busy={isLoading}
+                  onFile={ingest}
+                />
+                <FileDrop
+                  title="3 · SB report"
+                  description="Sponsored Brands report"
+                  tag="Optional"
+                  info={sbInfo}
+                  busy={isLoading}
+                  onFile={ingest}
+                />
+                <FileDrop
+                  title="4 · Bulk file"
+                  description="Adds current bids"
+                  tag="Optional"
+                  info={bulkInfo}
+                  busy={isLoading}
+                  onFile={ingest}
+                />
+                <FileDrop
+                  title="5 · ACoS map"
+                  description="Per-campaign targets"
+                  tag="Optional"
+                  info={acosInfo}
+                  busy={isLoading}
+                  onFile={ingest}
+                />
+              </div>
+              <p className="upload-hint">
+                Boxes 1 &amp; 2 are required; 3–5 are optional and add depth.
+                Wrong box? Files are auto-detected, so it still works. CSV, XLS,
+                XLSX all accepted.
+              </p>
+              <details className="settings-fold">
+                <summary>Adjust targets &amp; thresholds (optional)</summary>
+                <ThresholdPanel
+                  thresholds={thresholds}
+                  onChange={updateThresholds}
+                />
+              </details>
+            </>
+          )}
         </section>
-        <p className="upload-hint">
-          Boxes 1 &amp; 2 are required; 3–5 are optional and add more depth.
-          Dropped a file in the wrong box? Don&apos;t worry — files are
-          auto-detected, so it still works. CSV, XLS, and XLSX are all accepted.
-        </p>
-        <details className="settings-fold">
-          <summary>Adjust targets &amp; thresholds (optional)</summary>
-          <ThresholdPanel thresholds={thresholds} onChange={updateThresholds} />
-        </details>
 
         {error && (
           <div className="error-banner">
@@ -566,25 +595,25 @@ function EmptyState() {
     <section className="empty-state">
       <div className="empty-copy">
         <FileSpreadsheet size={42} />
-        <h2>Upload both reports to build the audit.</h2>
+        <h2>Add boxes 1 &amp; 2, then click Analyze.</h2>
         <p>
-          The dashboard will calculate match confidence, bid-change behavior,
-          target performance, missed scale opportunities, waste leakage, and
-          exportable action lists.
+          You&apos;ll get one simple screen: which keywords to{" "}
+          <strong>push</strong>, <strong>hold</strong>, or <strong>cut</strong>{" "}
+          — each with the plain-English reason behind it.
         </p>
       </div>
       <div className="empty-checklist">
         <div>
-          <CheckCircle2 size={18} /> History CSV with bid changes
+          <CheckCircle2 size={18} /> 1 · Bid-Change History export (required)
         </div>
         <div>
-          <CheckCircle2 size={18} /> Sponsored Products targeting XLSX
+          <CheckCircle2 size={18} /> 2 · SP Targeting report (required)
         </div>
         <div>
-          <CheckCircle2 size={18} /> Adjustable target ACoS and data thresholds
+          <CheckCircle2 size={18} /> 3–5 · SB / Bulk / ACoS map (optional)
         </div>
         <div>
-          <CheckCircle2 size={18} /> Local browser-side processing
+          <CheckCircle2 size={18} /> Everything runs locally in your browser
         </div>
       </div>
     </section>
