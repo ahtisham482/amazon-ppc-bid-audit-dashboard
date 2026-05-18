@@ -63,41 +63,31 @@ import {
 } from "./lib/export";
 
 type Section =
-  | "Executive"
-  | "Actions"
-  | "Winners"
-  | "Waste"
-  | "Wrong Bids"
-  | "Frequency"
+  | "Action Plan"
+  | "All Targets"
   | "Campaigns"
   | "Sponsored Brands"
-  | "Data Quality"
-  | "How it works";
+  | "Help";
 
 const sections: Array<{ id: Section; icon: typeof Activity }> = [
-  { id: "Executive", icon: Activity },
-  { id: "Actions", icon: Layers3 },
-  { id: "Winners", icon: ArrowUp },
-  { id: "Waste", icon: ArrowDown },
-  { id: "Wrong Bids", icon: AlertTriangle },
-  { id: "Frequency", icon: RefreshCw },
+  { id: "Action Plan", icon: Activity },
+  { id: "All Targets", icon: Layers3 },
   { id: "Campaigns", icon: BarChart3 },
   { id: "Sponsored Brands", icon: Flame },
-  { id: "Data Quality", icon: ShieldCheck },
-  { id: "How it works", icon: HelpCircle },
+  { id: "Help", icon: HelpCircle },
 ];
 
-// Plain-English explainer shown at the top of each focused tab.
-const sectionIntro: Partial<Record<Section, string>> = {
-  Winners:
-    "Targets that already make money but the bid was not meaningfully raised — you are likely leaving sales on the table. Decided by: profitable (ACoS ≤ target, enough sales & orders) AND no recent meaningful bid increase.",
-  Waste:
-    "Targets that lose money but the bid was not cut — spend keeps leaking. Decided by: wasteful (spend with zero orders, or ACoS ≥ 1.5× target) AND no recent meaningful bid decrease.",
-  "Wrong Bids":
-    "Bid moves that went the wrong way: a profitable target was cut, or a money-loser was bid up. Decided by: the most recent bid change direction contradicts the target's performance.",
-  Frequency:
-    "Targets changed so often that no change had time to prove itself, so the numbers are noisy. Decided by: 3 or more bid changes on the same target inside the uploaded window.",
-};
+/** Maps an engine recommendation to one of three plain buckets. */
+type Move = "PUSH" | "HOLD" | "CUT";
+function moveOf(row: AuditRow): Move {
+  if (row.recommendation === "Increase bid") return "PUSH";
+  if (
+    row.recommendation === "Reduce bid" ||
+    row.recommendation === "Pause / review"
+  )
+    return "CUT";
+  return "HOLD"; // Hold, Collect more data, Review match
+}
 
 const categoryColors: Record<string, string> = {
   "Winners Not Scaled": "#0F766E",
@@ -133,7 +123,7 @@ export default function App() {
   const [acosInfo, setAcosInfo] = useState<FileInfo | null>(null);
   const [thresholds, setThresholds] = useState<Thresholds>(defaultThresholds);
   const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [activeSection, setActiveSection] = useState<Section>("Executive");
+  const [activeSection, setActiveSection] = useState<Section>("Action Plan");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -249,38 +239,6 @@ export default function App() {
     if (historyRaw && targetingRaw && result) compute(next);
   }
 
-  const sectionRows = useMemo(() => {
-    if (!result) return [];
-    switch (activeSection) {
-      case "Winners":
-        return result.auditRows.filter(
-          (row) =>
-            row.category === "Winners Not Scaled" ||
-            row.category === "Profitable Terms Reduced",
-        );
-      case "Waste":
-        return result.auditRows.filter(
-          (row) =>
-            row.category === "Losers Not Reduced" ||
-            row.category === "Unprofitable Terms Increased",
-        );
-      case "Wrong Bids":
-        return result.auditRows.filter(
-          (row) =>
-            row.category === "Profitable Terms Reduced" ||
-            row.category === "Unprofitable Terms Increased",
-        );
-      case "Frequency":
-        return result.auditRows.filter(
-          (row) =>
-            row.category === "Too Many Bid Changes" ||
-            row.secondaryTags.includes("Too Many Bid Changes"),
-        );
-      default:
-        return result.auditRows;
-    }
-  }, [activeSection, result]);
-
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -312,10 +270,11 @@ export default function App() {
       <main className="main">
         <header className="topbar">
           <div>
-            <h1>Amazon PPC Bid Decision Quality Auditor</h1>
+            <h1>Amazon PPC — What To Do</h1>
             <p>
-              Upload History and Targeting reports to expose missed scaling,
-              spend leakage, wrong bid direction, and over-management.
+              Upload your reports, then see exactly which keywords to{" "}
+              <strong>push</strong>, <strong>hold</strong>, or{" "}
+              <strong>cut</strong> — in plain English.
             </p>
           </div>
           <div className="topbar-actions">
@@ -343,67 +302,57 @@ export default function App() {
           </div>
         </header>
 
-        <section className="upload-strip" aria-label="Upload reports">
+        <section className="upload-grid" aria-label="Upload reports">
           <FileDrop
-            title="History export"
-            description="Amazon Ads bid-change CSV / XLSX"
+            title="1 · Bid-Change History"
+            description="Amazon Ads History export (CSV)"
+            tag="Required"
             info={historyInfo}
             busy={isLoading}
             onFile={ingest}
           />
           <FileDrop
-            title="Targeting report"
-            description="Sponsored Products Targeting XLSX / XLS / CSV"
+            title="2 · SP Targeting report"
+            description="Sponsored Products Targeting (XLSX)"
+            tag="Required"
             info={targetingInfo}
             busy={isLoading}
             onFile={ingest}
           />
-          <ThresholdPanel thresholds={thresholds} onChange={updateThresholds} />
-        </section>
-        <div className="boosters">
           <FileDrop
-            title="Optional boosters"
-            description="Bulk file · SB report · Campaign→ACoS map"
-            info={null}
+            title="3 · SB report"
+            description="Sponsored Brands performance (XLSX)"
+            tag="Optional"
+            info={sbInfo}
             busy={isLoading}
             onFile={ingest}
           />
-          <div className="booster-chips">
-            {bulkInfo ? (
-              <span className="chip good">
-                ✓ Bulk file · {bulkInfo.rows.toLocaleString()} targets (current
-                bids)
-              </span>
-            ) : (
-              <span className="chip slate">
-                Bulk file — adds current bids, more matches
-              </span>
-            )}
-            {sbInfo ? (
-              <span className="chip good">
-                ✓ SB report · {sbInfo.rows.toLocaleString()} rows (SB audit on)
-              </span>
-            ) : (
-              <span className="chip slate">
-                SB performance report — unlocks the Sponsored Brands audit
-              </span>
-            )}
-            {acosInfo ? (
-              <span className="chip good">
-                ✓ ACoS map · {acosInfo.rows} campaign(s)
-              </span>
-            ) : (
-              <span className="chip slate">
-                Campaign→Target-ACoS map — per-campaign profit targets
-              </span>
-            )}
-          </div>
-        </div>
+          <FileDrop
+            title="4 · Bulk file"
+            description="Amazon Bulk Operations (XLSX) — adds current bids"
+            tag="Optional"
+            info={bulkInfo}
+            busy={isLoading}
+            onFile={ingest}
+          />
+          <FileDrop
+            title="5 · Target-ACoS map"
+            description="Campaign → Target ACoS (CSV) — per-campaign goals"
+            tag="Optional"
+            info={acosInfo}
+            busy={isLoading}
+            onFile={ingest}
+          />
+        </section>
         <p className="upload-hint">
-          Tip: it does not matter which box you use — every file is detected
-          automatically by its contents. CSV, XLS, XLSX all work. History + SP
-          Targeting are required; the rest are optional boosters.
+          Boxes 1 &amp; 2 are required; 3–5 are optional and add more depth.
+          Dropped a file in the wrong box? Don&apos;t worry — files are
+          auto-detected, so it still works. CSV, XLS, and XLSX are all accepted.
         </p>
+        <details className="settings-fold">
+          <summary>Adjust targets &amp; thresholds (optional)</summary>
+          <ThresholdPanel thresholds={thresholds} onChange={updateThresholds} />
+        </details>
 
         {error && (
           <div className="error-banner">
@@ -418,9 +367,9 @@ export default function App() {
           <Dashboard
             activeSection={activeSection}
             result={result}
-            rows={sectionRows}
             thresholds={thresholds}
             onExport={(kind) => handleExport(kind, result)}
+            onNavigate={setActiveSection}
           />
         )}
       </main>
@@ -434,12 +383,14 @@ function FileDrop({
   info,
   busy,
   onFile,
+  tag,
 }: {
   title: string;
   description: string;
   info: FileInfo | null;
   busy: boolean;
   onFile: (file: File | null) => void;
+  tag?: "Required" | "Optional";
 }) {
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -482,12 +433,19 @@ function FileDrop({
       />
       {info ? <CheckCircle2 size={20} /> : <UploadCloud size={20} />}
       <span>
-        <strong>{info ? info.name : title}</strong>
+        <strong>
+          {title}
+          {tag && (
+            <em className={`tag ${tag === "Required" ? "req" : "opt"}`}>
+              {tag}
+            </em>
+          )}
+        </strong>
         <small>
           {busy
             ? "Reading file…"
             : info
-              ? `Detected · ${info.rows.toLocaleString()} rows`
+              ? `✓ ${info.name} · ${info.rows.toLocaleString()} rows`
               : `${description} — click or drop`}
         </small>
       </span>
@@ -499,7 +457,7 @@ function FileDrop({
           pick();
         }}
       >
-        Choose
+        {info ? "Replace" : "Choose"}
       </button>
     </div>
   );
@@ -636,47 +594,339 @@ function EmptyState() {
 function Dashboard({
   activeSection,
   result,
-  rows,
   thresholds,
   onExport,
+  onNavigate,
 }: {
   activeSection: Section;
   result: AnalysisResult;
-  rows: AuditRow[];
   thresholds: Thresholds;
   onExport: (kind: string) => void;
+  onNavigate: (s: Section) => void;
 }) {
   return (
     <div className="dashboard">
-      <StatusStrip result={result} />
-      <KpiGrid result={result} />
-      {activeSection === "Executive" && (
-        <ExecutiveView
+      {activeSection === "Action Plan" && (
+        <ActionPlan
           result={result}
           thresholds={thresholds}
           onExport={onExport}
+          onNavigate={onNavigate}
         />
       )}
-      {activeSection !== "Executive" &&
-        activeSection !== "Campaigns" &&
-        activeSection !== "Sponsored Brands" &&
-        activeSection !== "Data Quality" &&
-        activeSection !== "How it works" && (
-          <ActionView
-            rows={rows}
-            activeSection={activeSection}
-            onExport={onExport}
-          />
-        )}
+      {activeSection === "All Targets" && (
+        <>
+          <StatusStrip result={result} />
+          <KpiGrid result={result} />
+          <AllTargets result={result} onExport={onExport} />
+        </>
+      )}
       {activeSection === "Campaigns" && (
         <CampaignView result={result} onExport={onExport} />
       )}
       {activeSection === "Sponsored Brands" && <SBView result={result} />}
-      {activeSection === "Data Quality" && (
-        <DataQuality result={result} onExport={onExport} />
+      {activeSection === "Help" && (
+        <>
+          <Methodology result={result} />
+          <DataQuality result={result} onExport={onExport} />
+        </>
       )}
-      {activeSection === "How it works" && <Methodology result={result} />}
     </div>
+  );
+}
+
+const MOVE_META: Record<
+  Move,
+  { title: string; tone: string; sub: string; metric: "sales" | "spend" }
+> = {
+  PUSH: {
+    title: "PUSH — be aggressive",
+    tone: "good",
+    sub: "Profitable and under-bid. Raise these bids to win more sales.",
+    metric: "sales",
+  },
+  CUT: {
+    title: "CUT — stop the bleed",
+    tone: "bad",
+    sub: "Losing money and not reduced. Lower or pause these bids.",
+    metric: "spend",
+  },
+  HOLD: {
+    title: "HOLD — leave alone",
+    tone: "slate",
+    sub: "Already fine, too soon to judge, or not enough data. Do nothing yet.",
+    metric: "spend",
+  },
+};
+
+function MoveItem({ row }: { row: AuditRow }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`move-item${open ? " open" : ""}`}>
+      <button
+        type="button"
+        className="move-item-head"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+      >
+        <span className="move-tgt">
+          <strong>{row.targeting}</strong>
+          <small>
+            {row.campaign}
+            {row.matchType && row.matchType !== "-"
+              ? ` · ${row.matchType}`
+              : ""}
+          </small>
+        </span>
+        <span className="move-nums">
+          <span title="ACoS">{percent(row.acos)}</span>
+          <span title="Sales">{money2(row.sales)}</span>
+          {row.currentBid !== null && (
+            <span title="Current bid" className="move-bid">
+              bid {money2(row.currentBid)}
+            </span>
+          )}
+        </span>
+        <span className="move-toggle">{open ? "Hide" : "Why?"}</span>
+      </button>
+      {open && (
+        <div className="move-why">
+          <p>{row.explain.reason}</p>
+          <p>
+            <strong>How decided:</strong> {row.explain.rule}
+          </p>
+          <p>
+            <strong>Do this:</strong> {row.explain.whyAction}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MoveColumn({
+  move,
+  rows,
+  onSeeAll,
+}: {
+  move: Move;
+  rows: AuditRow[];
+  onSeeAll: () => void;
+}) {
+  const meta = MOVE_META[move];
+  const sorted = rows.slice().sort((a, b) => b.priorityScore - a.priorityScore);
+  const top = sorted.slice(0, 10);
+  const totalMetric = rows.reduce(
+    (sum, r) => sum + (meta.metric === "sales" ? r.sales : r.spend),
+    0,
+  );
+  return (
+    <div className={`move-col ${meta.tone}`}>
+      <div className="move-col-head">
+        <div className="move-count">{number(rows.length)}</div>
+        <div>
+          <h3>{meta.title}</h3>
+          <p>{meta.sub}</p>
+        </div>
+      </div>
+      <div className="move-money">
+        {move === "PUSH"
+          ? `≈ ${money(totalMetric)} sales in play`
+          : move === "CUT"
+            ? `≈ ${money(totalMetric)} spend at risk`
+            : "No action needed right now"}
+      </div>
+      <div className="move-list">
+        {top.length === 0 && <p className="muted-note">Nothing here. 🎉</p>}
+        {top.map((row) => (
+          <MoveItem
+            key={`${row.campaign}-${row.adGroup}-${row.targeting}-${row.matchType}`}
+            row={row}
+          />
+        ))}
+      </div>
+      {rows.length > top.length && (
+        <button type="button" className="move-seeall" onClick={onSeeAll}>
+          See all {number(rows.length)} in All Targets →
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ActionPlan({
+  result,
+  thresholds,
+  onExport,
+  onNavigate,
+}: {
+  result: AnalysisResult;
+  thresholds: Thresholds;
+  onExport: (kind: string) => void;
+  onNavigate: (s: Section) => void;
+}) {
+  const s = result.summary;
+  const grade = gradeFor(s.decisionScore);
+  const push = result.auditRows.filter((r) => moveOf(r) === "PUSH");
+  const cut = result.auditRows.filter((r) => moveOf(r) === "CUT");
+  const hold = result.auditRows.filter((r) => moveOf(r) === "HOLD");
+
+  return (
+    <div className="plan">
+      <section className="plan-banner">
+        <div className={`plan-grade ${grade.tone}`}>
+          <strong>{s.decisionScore}</strong>
+          <span>/100</span>
+        </div>
+        <div className="plan-headline">
+          <h2>
+            Bid-management health: {grade.label} ·{" "}
+            <span className="hl-good">{number(push.length)} to push</span>,{" "}
+            <span className="hl-bad">{number(cut.length)} to cut</span>,{" "}
+            <span className="hl-muted">{number(hold.length)} to hold</span>
+          </h2>
+          <p>
+            Start with the green column, then the red. Grey can wait. Click any
+            keyword for the exact reason and numbers.{" "}
+            <button className="linklike" onClick={() => onNavigate("Help")}>
+              How is this decided?
+            </button>
+          </p>
+        </div>
+        <button className="button ghost" onClick={() => onExport("actions")}>
+          <Download size={16} />
+          Export action list
+        </button>
+      </section>
+
+      {result.warnings.length > 0 && (
+        <details className="plan-warn">
+          <summary>
+            {result.warnings.length} things to know about the data
+          </summary>
+          <ul>
+            {result.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      <div className="plan-grid">
+        <MoveColumn
+          move="PUSH"
+          rows={push}
+          onSeeAll={() => onNavigate("All Targets")}
+        />
+        <MoveColumn
+          move="CUT"
+          rows={cut}
+          onSeeAll={() => onNavigate("All Targets")}
+        />
+        <MoveColumn
+          move="HOLD"
+          rows={hold}
+          onSeeAll={() => onNavigate("All Targets")}
+        />
+      </div>
+      <p className="plan-foot">
+        Target ACoS {percent(thresholds.targetAcos, 0)} ·{" "}
+        {thresholds.mode.toLowerCase()} mode · need the details? Open{" "}
+        <button className="linklike" onClick={() => onNavigate("All Targets")}>
+          All Targets
+        </button>{" "}
+        or{" "}
+        <button className="linklike" onClick={() => onNavigate("Campaigns")}>
+          Campaigns
+        </button>
+        .
+      </p>
+    </div>
+  );
+}
+
+const ALL_FILTERS: Array<{
+  id: string;
+  label: string;
+  test: (r: AuditRow) => boolean;
+}> = [
+  { id: "all", label: "All", test: () => true },
+  { id: "push", label: "Push", test: (r) => moveOf(r) === "PUSH" },
+  { id: "cut", label: "Cut", test: (r) => moveOf(r) === "CUT" },
+  { id: "hold", label: "Hold", test: (r) => moveOf(r) === "HOLD" },
+  {
+    id: "winners",
+    label: "Winners not scaled",
+    test: (r) => r.category === "Winners Not Scaled",
+  },
+  {
+    id: "waste",
+    label: "Waste not cut",
+    test: (r) => r.category === "Losers Not Reduced",
+  },
+  {
+    id: "wrong",
+    label: "Wrong direction",
+    test: (r) =>
+      r.category === "Profitable Terms Reduced" ||
+      r.category === "Unprofitable Terms Increased",
+  },
+  {
+    id: "over",
+    label: "Over-managed",
+    test: (r) =>
+      r.category === "Too Many Bid Changes" ||
+      r.secondaryTags.includes("Too Many Bid Changes"),
+  },
+];
+
+function AllTargets({
+  result,
+  onExport,
+}: {
+  result: AnalysisResult;
+  onExport: (kind: string) => void;
+}) {
+  const [filter, setFilter] = useState("all");
+  const active = ALL_FILTERS.find((f) => f.id === filter) ?? ALL_FILTERS[0];
+  const rows = result.auditRows.filter(active.test);
+  return (
+    <section className="panel full">
+      <div className="panel-header">
+        <div>
+          <h2>All targets</h2>
+          <p>
+            Every audited keyword/target. Filter, then click “Why?” for the
+            exact rule and numbers.
+          </p>
+        </div>
+        <div className="export-row">
+          <button className="button ghost" onClick={() => onExport("full")}>
+            <Download size={16} />
+            Full CSV
+          </button>
+          <button className="button ghost" onClick={() => onExport("actions")}>
+            <Download size={16} />
+            Actions
+          </button>
+        </div>
+      </div>
+      <div className="filter-chips">
+        {ALL_FILTERS.map((f) => {
+          const n = result.auditRows.filter(f.test).length;
+          return (
+            <button
+              key={f.id}
+              className={`fchip${filter === f.id ? " active" : ""}`}
+              onClick={() => setFilter(f.id)}
+            >
+              {f.label} <em>{number(n)}</em>
+            </button>
+          );
+        })}
+      </div>
+      <ActionTable rows={rows} />
+    </section>
   );
 }
 
@@ -785,302 +1035,6 @@ function gradeFor(score: number) {
   if (score >= 60) return { label: "Fair", tone: "amber" };
   if (score >= 40) return { label: "Needs work", tone: "warn" };
   return { label: "Poor", tone: "bad" };
-}
-
-function storyParagraph(result: AnalysisResult, thresholds: Thresholds) {
-  const s = result.summary;
-  const b = s.scoreBreakdown;
-  const parts: string[] = [];
-  parts.push(
-    `Using a ${percent(thresholds.targetAcos, 0)} target ACoS (${thresholds.mode.toLowerCase()} mode), we could grade ${number(b.judged)} of ${number(s.totalTargets)} targets. ${number(b.setAside)} were set aside because they had no bid-history match or too little data, so they are not counted in the score.`,
-  );
-  parts.push(
-    `Of the ${number(b.judged)} graded, ${number(b.good)} look correctly managed and ${number(b.issues)} have a problem.`,
-  );
-  const probs: string[] = [];
-  if (s.winnersNotScaled)
-    probs.push(
-      `${s.winnersNotScaled} winner(s) are not being scaled (~${money(s.estimatedMissedSales)} of sales left on the table)`,
-    );
-  if (s.losersNotReduced)
-    probs.push(
-      `${s.losersNotReduced} money-loser(s) were not cut (~${money(s.estimatedWastedSpend)} leaking)`,
-    );
-  const wrong = s.wrongIncreases + s.wrongReductions;
-  if (wrong) probs.push(`${wrong} bid change(s) went the wrong direction`);
-  if (s.tooManyBidChanges)
-    probs.push(
-      `${s.tooManyBidChanges} target(s) were changed too often to read clearly`,
-    );
-  if (probs.length) parts.push(`The biggest issues: ${probs.join("; ")}.`);
-  return parts;
-}
-
-function ExecutiveView({
-  result,
-  thresholds,
-  onExport,
-}: {
-  result: AnalysisResult;
-  thresholds: Thresholds;
-  onExport: (kind: string) => void;
-}) {
-  const s = result.summary;
-  const b = s.scoreBreakdown;
-  const grade = gradeFor(s.decisionScore);
-  const total = Math.max(1, b.judged + b.setAside);
-  const topFixes = result.auditRows
-    .filter((row) => row.priority === "Critical" || row.priority === "High")
-    .sort((a, b2) => b2.priorityScore - a.priorityScore)
-    .slice(0, 6);
-
-  return (
-    <div className="executive-grid">
-      <section className="panel wide story">
-        <div className="panel-header">
-          <div>
-            <h2>Your account's bid-management story</h2>
-            <p>Plain-English summary anyone on your team can read.</p>
-          </div>
-          <button
-            className="button ghost"
-            onClick={() => onExport("executive")}
-          >
-            <Download size={16} />
-            Summary
-          </button>
-        </div>
-
-        <div className={`story-grade ${grade.tone}`}>
-          <div className="story-score">
-            <strong>{s.decisionScore}</strong>
-            <span>/ 100</span>
-          </div>
-          <div>
-            <h3>Bid-management health: {grade.label}</h3>
-            <p>{b.formula}</p>
-          </div>
-        </div>
-
-        <div
-          className="score-bar"
-          title="How the graded targets split"
-          aria-label="Score breakdown"
-        >
-          <span
-            className="seg good"
-            style={{ width: `${(b.good / total) * 100}%` }}
-          >
-            {b.good > 0 && `${b.good} managed well`}
-          </span>
-          <span
-            className="seg bad"
-            style={{ width: `${(b.issues / total) * 100}%` }}
-          >
-            {b.issues > 0 && `${b.issues} with a problem`}
-          </span>
-          <span
-            className="seg muted"
-            style={{ width: `${(b.setAside / total) * 100}%` }}
-          >
-            {b.setAside > 0 && `${b.setAside} set aside (not graded)`}
-          </span>
-        </div>
-
-        <div className="story-narrative">
-          {storyParagraph(result, thresholds).map((line) => (
-            <p key={line}>{line}</p>
-          ))}
-        </div>
-
-        <StoryCharts result={result} />
-      </section>
-
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <h2>What to fix first</h2>
-            <p>The highest-impact problems, in order.</p>
-          </div>
-        </div>
-        <div className="fix-list">
-          {topFixes.length === 0 && (
-            <p className="muted-note">
-              No high-priority problems found with the current thresholds. 🎉
-            </p>
-          )}
-          {topFixes.map((row) => (
-            <div
-              className="fix-card"
-              key={`${row.campaign}-${row.targeting}-${row.category}`}
-            >
-              <div className="fix-head">
-                <Badge tone={priorityTone(row.priority)}>{row.priority}</Badge>
-                <strong>{row.recommendation}</strong>
-                <span className="fix-cat">{row.category}</span>
-              </div>
-              <p className="fix-reason">{row.explain.reason}</p>
-              <p className="fix-why">
-                <Flame size={13} /> {row.explain.whyAction}
-              </p>
-            </div>
-          ))}
-        </div>
-        {result.warnings.length > 0 && (
-          <div className="insight-list">
-            {result.warnings.map((warning) => (
-              <div className="insight warning" key={warning}>
-                <AlertTriangle size={16} />
-                {warning}
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="panel full">
-        <div className="panel-header">
-          <div>
-            <h2>Highest-priority actions</h2>
-            <p>Click any row's “Why?” to see the exact rule and numbers.</p>
-          </div>
-          <button className="button ghost" onClick={() => onExport("actions")}>
-            <Download size={16} />
-            Actions CSV
-          </button>
-        </div>
-        <ActionTable
-          rows={result.auditRows
-            .filter((row) => row.priority !== "Low" && row.priority !== "Watch")
-            .slice(0, 18)}
-          compact
-        />
-      </section>
-    </div>
-  );
-}
-
-function StoryCharts({ result }: { result: AnalysisResult }) {
-  const issueCats = new Set([
-    "Winners Not Scaled",
-    "Losers Not Reduced",
-    "Profitable Terms Reduced",
-    "Unprofitable Terms Increased",
-    "Too Many Bid Changes",
-  ]);
-  const problemsByType = result.charts.categoryBreakdown
-    .filter((d) => issueCats.has(d.name))
-    .sort((a, b) => b.value - a.value);
-  const campaignProblems = result.campaignSummary
-    .filter((c) => c.issueCount > 0)
-    .slice()
-    .sort((a, b) => b.issueCount - a.issueCount)
-    .slice(0, 8)
-    .map((c) => ({ name: c.campaign, value: c.issueCount }));
-
-  return (
-    <div className="story-charts">
-      <div className="chart-box">
-        <h3>Problems by type</h3>
-        <p className="chart-sub">How many targets fall into each problem.</p>
-        <ResponsiveContainer width="100%" height={210}>
-          <BarChart
-            data={problemsByType}
-            layout="vertical"
-            margin={{ top: 4, right: 40, bottom: 4, left: 130 }}
-          >
-            <CartesianGrid stroke="#E5E7EB" horizontal={false} />
-            <XAxis type="number" allowDecimals={false} />
-            <YAxis
-              type="category"
-              dataKey="name"
-              width={128}
-              tick={{ fontSize: 12 }}
-            />
-            <Tooltip />
-            <Bar dataKey="value" radius={[0, 6, 6, 0]}>
-              {problemsByType.map((entry) => (
-                <Cell
-                  key={entry.name}
-                  fill={categoryColors[entry.name] ?? "#475569"}
-                />
-              ))}
-              <LabelList dataKey="value" position="right" />
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-      <div className="chart-box">
-        <h3>Campaigns with the most problems</h3>
-        <p className="chart-sub">Where to focus your clean-up first.</p>
-        <ResponsiveContainer width="100%" height={210}>
-          <BarChart
-            data={campaignProblems}
-            layout="vertical"
-            margin={{ top: 4, right: 40, bottom: 4, left: 130 }}
-          >
-            <CartesianGrid stroke="#E5E7EB" horizontal={false} />
-            <XAxis type="number" allowDecimals={false} />
-            <YAxis
-              type="category"
-              dataKey="name"
-              width={128}
-              tick={{ fontSize: 11 }}
-            />
-            <Tooltip />
-            <Bar
-              dataKey="value"
-              radius={[0, 6, 6, 0]}
-              fill="#92400E"
-              name="Problem targets"
-            >
-              <LabelList dataKey="value" position="right" />
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
-}
-
-function ActionView({
-  rows,
-  activeSection,
-  onExport,
-}: {
-  rows: AuditRow[];
-  activeSection: Section;
-  onExport: (kind: string) => void;
-}) {
-  return (
-    <section className="panel full">
-      <div className="panel-header">
-        <div>
-          <h2>
-            {activeSection === "Actions" ? "Action dashboard" : activeSection}
-          </h2>
-          {sectionIntro[activeSection] && (
-            <p className="section-intro">{sectionIntro[activeSection]}</p>
-          )}
-          <p>
-            {rows.length.toLocaleString()} target combinations in this view ·
-            click any “Why?” for the exact rule and numbers.
-          </p>
-        </div>
-        <div className="export-row">
-          <button className="button ghost" onClick={() => onExport("full")}>
-            <Download size={16} />
-            Full CSV
-          </button>
-          <button className="button ghost" onClick={() => onExport("actions")}>
-            <Download size={16} />
-            Actions
-          </button>
-        </div>
-      </div>
-      <ActionTable rows={rows} />
-    </section>
-  );
 }
 
 function ActionTable({
