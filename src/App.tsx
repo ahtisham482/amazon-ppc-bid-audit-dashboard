@@ -1315,7 +1315,7 @@ function CampaignView({
                 <strong title={c.campaign}>{c.campaign}</strong>
                 <span className="campaign-meta">
                   {money(c.spend)} spend · {percent(c.acos)} ACoS ·{" "}
-                  {number(c.targets)} targets
+                  {number(c.targets)} {c.targets === 1 ? "target" : "targets"}
                 </span>
               </div>
               <p className="campaign-problem">{campaignProblemLine(c)}</p>
