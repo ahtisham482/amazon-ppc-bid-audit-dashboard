@@ -53,6 +53,7 @@ import {
   Priority,
   Thresholds,
 } from "./lib/types";
+import { parseCampaignName, matchTypeLabel } from "./lib/campaign-parser";
 import { dateShort, money, money2, number, percent } from "./lib/format";
 import {
   auditRowToExport,
@@ -688,6 +689,100 @@ const MOVE_META: Record<
   },
 };
 
+function WhyCard({ row }: { row: AuditRow }) {
+  const [showMore, setShowMore] = useState(false);
+  const bidArrow =
+    row.latestBid != null && row.previousBid != null
+      ? row.latestBid > row.previousBid
+        ? "↑"
+        : row.latestBid < row.previousBid
+          ? "↓"
+          : "→"
+      : null;
+  return (
+    <div className="why-card">
+      <div className="why-row">
+        <span className="why-lbl">WHAT</span>
+        <span>{row.explain.reason}</span>
+      </div>
+      <div className="why-row">
+        <span className="why-lbl">NUMBERS</span>
+        <span className="why-pills">
+          {row.acos != null && (
+            <span className="why-pill">ACoS {percent(row.acos)}</span>
+          )}
+          {row.spend > 0 && (
+            <span className="why-pill">Spend {money2(row.spend)}</span>
+          )}
+          {row.sales > 0 && (
+            <span className="why-pill">Sales {money2(row.sales)}</span>
+          )}
+          {row.orders > 0 && (
+            <span className="why-pill">{number(row.orders)} orders</span>
+          )}
+          {row.clicks > 0 && (
+            <span className="why-pill">{number(row.clicks)} clicks</span>
+          )}
+          {row.cvr != null && (
+            <span className="why-pill">CVR {percent(row.cvr)}</span>
+          )}
+        </span>
+      </div>
+      {(row.previousBid != null || row.latestBid != null) && (
+        <div className="why-row">
+          <span className="why-lbl">BID MOVE</span>
+          <span className="why-bid">
+            {row.previousBid != null && <span>{money2(row.previousBid)}</span>}
+            {bidArrow && <span className="why-bid-arr">{bidArrow}</span>}
+            {row.latestBid != null && <span>{money2(row.latestBid)}</span>}
+            {row.bidChangePct != null && (
+              <span
+                className={`why-bid-pct ${row.bidChangePct >= 0 ? "pos" : "neg"}`}
+              >
+                {row.bidChangePct >= 0 ? "+" : ""}
+                {(row.bidChangePct * 100).toFixed(1)}%
+              </span>
+            )}
+            {row.bidChanges > 0 && (
+              <span className="why-bid-meta">
+                {row.bidChanges} change{row.bidChanges !== 1 ? "s" : ""}
+              </span>
+            )}
+          </span>
+        </div>
+      )}
+      <div className="why-row">
+        <span className="why-lbl">DO THIS</span>
+        <strong className="why-do-this">{row.explain.whyAction}</strong>
+      </div>
+      <button
+        type="button"
+        className="why-more-btn"
+        onClick={() => setShowMore(!showMore)}
+      >
+        {showMore ? "▲ less" : "▼ how it was decided"}
+      </button>
+      {showMore && (
+        <div className="why-detail-extra">
+          <p>
+            <strong>Rule:</strong> {row.explain.rule}
+          </p>
+          {row.explain.whyPriority && (
+            <p>
+              <strong>Priority:</strong> {row.explain.whyPriority}
+            </p>
+          )}
+          {row.explain.whyConfidence && (
+            <p>
+              <strong>Confidence:</strong> {row.explain.whyConfidence}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MoveItem({ row }: { row: AuditRow }) {
   const [open, setOpen] = useState(false);
   return (
@@ -718,17 +813,7 @@ function MoveItem({ row }: { row: AuditRow }) {
         </span>
         <span className="move-toggle">{open ? "Hide" : "Why?"}</span>
       </button>
-      {open && (
-        <div className="move-why">
-          <p>{row.explain.reason}</p>
-          <p>
-            <strong>How decided:</strong> {row.explain.rule}
-          </p>
-          <p>
-            <strong>Do this:</strong> {row.explain.whyAction}
-          </p>
-        </div>
-      )}
+      {open && <WhyCard row={row} />}
     </div>
   );
 }
@@ -1228,27 +1313,7 @@ function ActionTable({
                   {isOpen && (
                     <tr className="why-detail">
                       <td colSpan={13}>
-                        <div className="why-grid">
-                          <p>
-                            <strong>What:</strong> {row.explain.reason}
-                          </p>
-                          <p>
-                            <strong>How it was decided:</strong>{" "}
-                            {row.explain.rule}
-                          </p>
-                          <p>
-                            <strong>Why this action:</strong>{" "}
-                            {row.explain.whyAction}
-                          </p>
-                          <p>
-                            <strong>Why this priority:</strong>{" "}
-                            {row.explain.whyPriority}
-                          </p>
-                          <p>
-                            <strong>Why this confidence:</strong>{" "}
-                            {row.explain.whyConfidence}
-                          </p>
-                        </div>
+                        <WhyCard row={row} />
                       </td>
                     </tr>
                   )}
@@ -1276,6 +1341,86 @@ function campaignProblemLine(c: CampaignSummary) {
       : "No clear bid-management problems in this campaign.";
   }
   return `Main issue: ${worst[0]} ${worst[0] === 1 ? "target" : "targets"} ${worst[1]}.`;
+}
+
+function CampaignCard({
+  c,
+  auditRows,
+}: {
+  c: CampaignSummary;
+  auditRows: AuditRow[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const parsed = parseCampaignName(c.campaign);
+  const campaignRows = auditRows.filter((r) => r.campaign === c.campaign);
+  return (
+    <div className={`campaign-card${expanded ? " expanded" : ""}`}>
+      <div className="campaign-card-top">
+        <strong title={c.campaign}>{c.campaign}</strong>
+        <span className="campaign-meta">
+          {money(c.spend)} spend · {percent(c.acos)} ACoS · {number(c.targets)}{" "}
+          {c.targets === 1 ? "target" : "targets"}
+        </span>
+      </div>
+      <p className="campaign-problem">{campaignProblemLine(c)}</p>
+      <div className="chip-row">
+        {c.winnersNotScaled > 0 && (
+          <span className="chip good">
+            {c.winnersNotScaled} winners not scaled
+          </span>
+        )}
+        {c.losersNotReduced > 0 && (
+          <span className="chip warn">{c.losersNotReduced} waste not cut</span>
+        )}
+        {c.wrongBidChanges > 0 && (
+          <span className="chip bad">{c.wrongBidChanges} wrong-direction</span>
+        )}
+        {c.tooManyBidChanges > 0 && (
+          <span className="chip amber">{c.tooManyBidChanges} over-managed</span>
+        )}
+        {c.unmatched > 0 && (
+          <span className="chip slate">{c.unmatched} unmatched</span>
+        )}
+      </div>
+      {campaignRows.length > 0 && (
+        <button
+          type="button"
+          className="campaign-drill-btn"
+          onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
+        >
+          {expanded
+            ? "Hide targets ▴"
+            : `View ${campaignRows.length} ${campaignRows.length === 1 ? "target" : "targets"} ▾`}
+        </button>
+      )}
+      {expanded && (
+        <div className="campaign-drill">
+          {parsed.valid && (
+            <div className="parsed-chips">
+              {parsed.adType && (
+                <span className="parsed-chip">{parsed.adType}</span>
+              )}
+              {parsed.mode && (
+                <span className="parsed-chip">
+                  {parsed.mode === "M" ? "Manual" : parsed.mode}
+                </span>
+              )}
+              {parsed.matchType && (
+                <span className="parsed-chip">
+                  {matchTypeLabel(parsed.matchType)}
+                </span>
+              )}
+              {parsed.strategy && (
+                <span className="parsed-chip">{parsed.strategy}</span>
+              )}
+            </div>
+          )}
+          <ActionTable rows={campaignRows} compact />
+        </div>
+      )}
+    </div>
+  );
 }
 
 function CampaignView({
@@ -1310,41 +1455,7 @@ function CampaignView({
         </div>
         <div className="campaign-cards">
           {campaigns.map((c) => (
-            <div className="campaign-card" key={c.campaign}>
-              <div className="campaign-card-top">
-                <strong title={c.campaign}>{c.campaign}</strong>
-                <span className="campaign-meta">
-                  {money(c.spend)} spend · {percent(c.acos)} ACoS ·{" "}
-                  {number(c.targets)} {c.targets === 1 ? "target" : "targets"}
-                </span>
-              </div>
-              <p className="campaign-problem">{campaignProblemLine(c)}</p>
-              <div className="chip-row">
-                {c.winnersNotScaled > 0 && (
-                  <span className="chip good">
-                    {c.winnersNotScaled} winners not scaled
-                  </span>
-                )}
-                {c.losersNotReduced > 0 && (
-                  <span className="chip warn">
-                    {c.losersNotReduced} waste not cut
-                  </span>
-                )}
-                {c.wrongBidChanges > 0 && (
-                  <span className="chip bad">
-                    {c.wrongBidChanges} wrong-direction
-                  </span>
-                )}
-                {c.tooManyBidChanges > 0 && (
-                  <span className="chip amber">
-                    {c.tooManyBidChanges} over-managed
-                  </span>
-                )}
-                {c.unmatched > 0 && (
-                  <span className="chip slate">{c.unmatched} unmatched</span>
-                )}
-              </div>
-            </div>
+            <CampaignCard key={c.campaign} c={c} auditRows={result.auditRows} />
           ))}
         </div>
       </section>

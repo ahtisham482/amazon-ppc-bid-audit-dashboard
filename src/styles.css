@@ -1654,6 +1654,138 @@ tr.why-detail td {
   color: #d1fae5;
 }
 
+/* ── WhyCard ─────────────────────────────────────────────────── */
+.why-card {
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.why-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12.5px;
+  color: #1f2937;
+  line-height: 1.5;
+}
+.why-lbl {
+  flex-shrink: 0;
+  width: 72px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding-top: 2px;
+  text-transform: uppercase;
+}
+.why-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.why-pill {
+  background: var(--surface-3, #e5e7eb);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11.5px;
+  color: var(--ink);
+}
+.why-bid {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+.why-bid-arr {
+  font-size: 14px;
+  color: var(--muted);
+}
+.why-bid-pct {
+  font-weight: 700;
+  font-size: 11.5px;
+}
+.why-bid-pct.pos {
+  color: var(--teal);
+}
+.why-bid-pct.neg {
+  color: var(--red);
+}
+.why-bid-meta {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: inherit;
+}
+.why-do-this {
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.why-more-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+}
+.why-more-btn:hover {
+  color: var(--ink);
+}
+.why-detail-extra {
+  border-top: 1px dashed var(--line);
+  padding-top: 6px;
+  margin-top: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.why-detail-extra p {
+  margin: 0;
+  font-size: 12px;
+  color: #374151;
+}
+.why-detail-extra strong {
+  color: var(--ink);
+}
+
+/* ── CampaignCard drilldown ───────────────────────────────────── */
+.campaign-drill-btn {
+  background: none;
+  border: none;
+  padding: 6px 0 0;
+  font-size: 12px;
+  color: var(--teal);
+  cursor: pointer;
+  font-weight: 600;
+}
+.campaign-drill-btn:hover {
+  text-decoration: underline;
+}
+.campaign-drill {
+  margin-top: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.parsed-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.parsed-chip {
+  background: var(--surface-3, #e5e7eb);
+  border-radius: 99px;
+  padding: 2px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
 @media (max-width: 1180px) {
   .upload-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
