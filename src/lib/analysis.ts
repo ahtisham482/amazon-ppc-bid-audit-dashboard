@@ -569,7 +569,7 @@ export function analyzeFiles(
           `Per-campaign target ACoS applied to ${opts.acosMap.size.toLocaleString()} campaign(s) from your ACoS map.`,
         ]
       : [
-          "For true profit calls, add a break-even or target ACoS per product. Until then the tool uses one global target ACoS.",
+          "Upload a per-campaign ACoS map (Box 5) for tighter per-campaign targets. Until then the tool uses one global target ACoS for every campaign.",
         ]),
   ];
 
@@ -1143,7 +1143,7 @@ export function getMethodology(t: Thresholds): Methodology {
       "If a target had no bid change inside the uploaded History window, it has no history row — so its current bid is unknown from this file alone. A Bulk Operations file lists every target's current bid and fixes this.",
       "The Sponsored Products Targeting report has no campaign / ad-group / target IDs, so matching relies on names. Renames or structure differences cause some misses. A Bulk file (with IDs) raises the match rate.",
       "Sponsored Brands rows are isolated unless an SB performance report is uploaded — they form a separate audit and do not change the SP match rate.",
-      "True profit needs a break-even or target ACoS per product. Without it the tool uses one global target ACoS as a placeholder.",
+      "For tighter profit calls, upload a per-campaign target-ACoS map (Box 5). Without it the tool uses one global target ACoS for every campaign.",
     ],
   };
 }
@@ -1167,7 +1167,9 @@ interface ExplainInput {
 function targetLabel(row: PerformanceAggregate) {
   const mt =
     row.matchType && row.matchType !== "-" ? ` (${row.matchType})` : "";
-  return `“${row.targeting}”${mt} in ${row.campaign} › ${row.adGroup}`;
+  const suffix =
+    row.adGroup && row.adGroup !== row.campaign ? ` › ${row.adGroup}` : "";
+  return `"${row.targeting}"${mt} in ${row.campaign}${suffix}`;
 }
 
 function buildExplain(input: ExplainInput): RowExplain {

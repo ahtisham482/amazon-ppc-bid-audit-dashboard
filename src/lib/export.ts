@@ -11,11 +11,17 @@ function quote(value: unknown) {
 export function toCsv(rows: Array<Record<string, unknown>>) {
   if (!rows.length) return "";
   const headers = Object.keys(rows[0]);
-  const body = rows.map((row) => headers.map((header) => quote(row[header])).join(","));
+  const body = rows.map((row) =>
+    headers.map((header) => quote(row[header])).join(","),
+  );
   return [headers.join(","), ...body].join("\n");
 }
 
-export function downloadText(fileName: string, content: string, type = "text/csv;charset=utf-8") {
+export function downloadText(
+  fileName: string,
+  content: string,
+  type = "text/csv;charset=utf-8",
+) {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -42,23 +48,26 @@ export function auditRowToExport(row: AuditRow): Record<string, unknown> {
     Spend: row.spend,
     Sales: row.sales,
     Orders: row.orders,
-    ACoS: row.acos,
+    ACoS: row.acos != null ? `${(row.acos * 100).toFixed(2)}%` : "",
     ROAS: row.roas,
     Clicks: row.clicks,
     CPC: row.cpc,
-    CTR: row.ctr,
-    CVR: row.cvr,
+    CTR: row.ctr != null ? `${(row.ctr * 100).toFixed(2)}%` : "",
+    CVR: row.cvr != null ? `${(row.cvr * 100).toFixed(2)}%` : "",
     "Previous Bid": row.previousBid,
     "Latest Bid": row.latestBid,
-    "Bid Change %": row.bidChangePct,
+    "Bid Change %":
+      row.bidChangePct != null ? `${(row.bidChangePct * 100).toFixed(1)}%` : "",
     "Last Bid Change": dateShort(row.lastBidChangeDate),
     "Bid Changes": row.bidChanges,
     "Match Level": row.matchLevel,
-    "Before/After": row.impact.label
+    "Before/After": row.impact.label,
   };
 }
 
-export function campaignToExport(row: CampaignSummary): Record<string, unknown> {
+export function campaignToExport(
+  row: CampaignSummary,
+): Record<string, unknown> {
   return {
     Campaign: row.campaign,
     Spend: row.spend,
@@ -72,7 +81,7 @@ export function campaignToExport(row: CampaignSummary): Record<string, unknown> 
     "Wrong Bid Changes": row.wrongBidChanges,
     "Too Many Bid Changes": row.tooManyBidChanges,
     "Needs More Data": row.needsMoreData,
-    Unmatched: row.unmatched
+    Unmatched: row.unmatched,
   };
 }
 

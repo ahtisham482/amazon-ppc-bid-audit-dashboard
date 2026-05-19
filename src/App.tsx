@@ -529,7 +529,7 @@ function ThresholdPanel({
           </select>
         </label>
         <label>
-          Target ACoS
+          Target ACoS (%)
           <input
             type="number"
             value={Math.round(thresholds.targetAcos * 100)}
@@ -552,7 +552,7 @@ function ThresholdPanel({
           />
         </label>
         <label>
-          Min spend
+          Min spend ($)
           <input
             type="number"
             value={thresholds.minSpend}
@@ -574,7 +574,7 @@ function ThresholdPanel({
           />
         </label>
         <label>
-          Lookback
+          Lookback (days)
           <input
             type="number"
             value={thresholds.lookbackDays}
@@ -886,12 +886,16 @@ const ALL_FILTERS: Array<{
   {
     id: "winners",
     label: "Winners not scaled",
-    test: (r) => r.category === "Winners Not Scaled",
+    test: (r) =>
+      r.category === "Winners Not Scaled" ||
+      r.secondaryTags.includes("Winners Not Scaled"),
   },
   {
     id: "waste",
     label: "Waste not cut",
-    test: (r) => r.category === "Losers Not Reduced",
+    test: (r) =>
+      r.category === "Losers Not Reduced" ||
+      r.secondaryTags.includes("Losers Not Reduced"),
   },
   {
     id: "wrong",
@@ -1184,7 +1188,9 @@ function ActionTable({
                     <td className="reason-cell">{row.reason}</td>
                     <td>
                       <span>{row.campaign}</span>
-                      <small>{row.adGroup}</small>
+                      {row.adGroup !== row.campaign && (
+                        <small>{row.adGroup}</small>
+                      )}
                     </td>
                     <td>
                       <span>{row.targeting}</span>
@@ -1269,7 +1275,7 @@ function campaignProblemLine(c: CampaignSummary) {
       ? `No clear problems — but ${c.unmatched} target(s) here could not be matched to bid history.`
       : "No clear bid-management problems in this campaign.";
   }
-  return `Main issue: ${worst[0]} target(s) ${worst[1]}.`;
+  return `Main issue: ${worst[0]} ${worst[0] === 1 ? "target" : "targets"} ${worst[1]}.`;
 }
 
 function CampaignView({
@@ -1555,19 +1561,23 @@ function SBView({ result }: { result: AnalysisResult }) {
             className="seg good"
             style={{ width: `${(b.good / total) * 100}%` }}
           >
-            {b.good > 0 && `${b.good} managed well`}
+            {b.good > 0 && b.good / total >= 0.1 && `${b.good} managed well`}
           </span>
           <span
             className="seg bad"
             style={{ width: `${(b.issues / total) * 100}%` }}
           >
-            {b.issues > 0 && `${b.issues} with a problem`}
+            {b.issues > 0 &&
+              b.issues / total >= 0.1 &&
+              `${b.issues} with a problem`}
           </span>
           <span
             className="seg muted"
             style={{ width: `${(b.setAside / total) * 100}%` }}
           >
-            {b.setAside > 0 && `${b.setAside} set aside`}
+            {b.setAside > 0 &&
+              b.setAside / total >= 0.1 &&
+              `${b.setAside} set aside`}
           </span>
         </div>
         <div className="story-narrative">
