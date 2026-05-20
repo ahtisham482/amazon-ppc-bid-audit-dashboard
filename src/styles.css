@@ -1786,6 +1786,111 @@ tr.why-detail td {
   color: var(--ink);
 }
 
+/* ── AdGroupRow — Phase D ─────────────────────────────────────── */
+.ag-clickable {
+  cursor: pointer;
+}
+.ag-clickable:hover td {
+  background: var(--surface-2);
+}
+.ag-open td {
+  background: var(--surface-2);
+}
+.ag-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.ag-toggle {
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+  user-select: none;
+}
+.ag-acos {
+  font-weight: 600;
+}
+.ag-acos-good {
+  color: var(--teal);
+}
+.ag-acos-warn {
+  color: #d97706;
+}
+.ag-acos-bad {
+  color: var(--red);
+}
+.ag-acos-muted {
+  color: var(--muted);
+}
+.ag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.chip.xs {
+  padding: 1px 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.ag-expand-cell {
+  padding: 0 !important;
+  border-top: none !important;
+}
+.ag-expand-row td {
+  background: var(--surface-2);
+}
+
+/* ── Products tab — Phase E ───────────────────────────────────── */
+.products-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.product-summary-bar {
+  display: flex;
+  gap: 24px;
+  padding: 10px 16px;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.product-summary-bar strong {
+  color: var(--ink);
+}
+.product-name-cell {
+  font-weight: 600;
+  font-size: 12.5px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.product-acos-target {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.product-issue-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.product-issue-track {
+  width: 50px;
+  height: 5px;
+  background: var(--line);
+  border-radius: 99px;
+  overflow: hidden;
+}
+.product-issue-fill {
+  height: 100%;
+  background: var(--red);
+  border-radius: 99px;
+}
+
 @media (max-width: 1180px) {
   .upload-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

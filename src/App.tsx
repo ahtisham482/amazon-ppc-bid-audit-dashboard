@@ -13,6 +13,7 @@ import {
   HelpCircle,
   Layers3,
   LineChart,
+  Package,
   RefreshCw,
   Search,
   Settings2,
@@ -67,6 +68,7 @@ type Section =
   | "Action Plan"
   | "All Targets"
   | "Campaigns"
+  | "Products"
   | "Sponsored Brands"
   | "Help";
 
@@ -74,6 +76,7 @@ const sections: Array<{ id: Section; icon: typeof Activity }> = [
   { id: "Action Plan", icon: Activity },
   { id: "All Targets", icon: Layers3 },
   { id: "Campaigns", icon: BarChart3 },
+  { id: "Products", icon: Package },
   { id: "Sponsored Brands", icon: Flame },
   { id: "Help", icon: HelpCircle },
 ];
@@ -652,7 +655,14 @@ function Dashboard({
         </>
       )}
       {activeSection === "Campaigns" && (
-        <CampaignView result={result} onExport={onExport} />
+        <CampaignView
+          result={result}
+          thresholds={thresholds}
+          onExport={onExport}
+        />
+      )}
+      {activeSection === "Products" && (
+        <ProductsView result={result} thresholds={thresholds} />
       )}
       {activeSection === "Sponsored Brands" && <SBView result={result} />}
       {activeSection === "Help" && (
@@ -1343,6 +1353,256 @@ function campaignProblemLine(c: CampaignSummary) {
   return `Main issue: ${worst[0]} ${worst[0] === 1 ? "target" : "targets"} ${worst[1]}.`;
 }
 
+function acosHeatClass(acos: number | null, targetAcos: number) {
+  if (acos == null) return "muted";
+  if (acos >= targetAcos * 1.5) return "bad";
+  if (acos >= targetAcos) return "warn";
+  return "good";
+}
+
+function AdGroupRow({
+  row,
+  auditRows,
+  targetAcos,
+}: {
+  row: CampaignSummary;
+  auditRows: AuditRow[];
+  targetAcos: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const agRows = auditRows.filter((r) => r.adGroup === row.campaign);
+  const heatClass = acosHeatClass(row.acos, targetAcos);
+  return (
+    <Fragment>
+      <tr
+        className={`ag-row${expanded ? " ag-open" : ""}${agRows.length > 0 ? " ag-clickable" : ""}`}
+        onClick={() => agRows.length > 0 && setExpanded(!expanded)}
+      >
+        <td className="ag-name-cell">
+          {agRows.length > 0 && (
+            <span className="ag-toggle">{expanded ? "▾" : "▸"}</span>
+          )}
+          {row.campaign}
+        </td>
+        <td>{money(row.spend)}</td>
+        <td className={`ag-acos ag-acos-${heatClass}`}>{percent(row.acos)}</td>
+        <td>{number(row.targets)}</td>
+        <td>
+          <span className="ag-chips">
+            {row.winnersNotScaled > 0 && (
+              <span className="chip good xs" title="Winners not scaled">
+                +{row.winnersNotScaled}
+              </span>
+            )}
+            {row.losersNotReduced > 0 && (
+              <span className="chip warn xs" title="Losers not reduced">
+                -{row.losersNotReduced}
+              </span>
+            )}
+            {row.wrongBidChanges > 0 && (
+              <span className="chip bad xs" title="Wrong bid direction">
+                ✗{row.wrongBidChanges}
+              </span>
+            )}
+            {row.tooManyBidChanges > 0 && (
+              <span className="chip amber xs" title="Too many bid changes">
+                ⟳{row.tooManyBidChanges}
+              </span>
+            )}
+            {row.issueCount === 0 && (
+              <span className="chip slate xs">clean</span>
+            )}
+          </span>
+        </td>
+        <td>{row.unmatched > 0 ? row.unmatched : "—"}</td>
+        <td className="reason-cell">{campaignProblemLine(row)}</td>
+      </tr>
+      {expanded && agRows.length > 0 && (
+        <tr className="ag-expand-row">
+          <td colSpan={7} className="ag-expand-cell">
+            <ActionTable rows={agRows} compact />
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  );
+}
+
+interface ProductKpi {
+  productCode: string;
+  spend: number;
+  sales: number;
+  orders: number;
+  targets: number;
+  issueCount: number;
+  acos: number | null;
+  campaigns: number;
+}
+
+function ProductsView({
+  result,
+  thresholds,
+}: {
+  result: AnalysisResult;
+  thresholds: Thresholds;
+}) {
+  const [sort, setSort] = useState<"spend" | "acos" | "issueCount" | "targets">(
+    "spend",
+  );
+
+  const products = useMemo<ProductKpi[]>(() => {
+    const map = new Map<
+      string,
+      {
+        spend: number;
+        sales: number;
+        orders: number;
+        targets: number;
+        issueCount: number;
+        campaigns: Set<string>;
+      }
+    >();
+    for (const r of result.auditRows) {
+      const key = parseCampaignName(r.campaign).productCode || r.campaign;
+      if (!map.has(key)) {
+        map.set(key, {
+          spend: 0,
+          sales: 0,
+          orders: 0,
+          targets: 0,
+          issueCount: 0,
+          campaigns: new Set(),
+        });
+      }
+      const entry = map.get(key)!;
+      entry.spend += r.spend;
+      entry.sales += r.sales;
+      entry.orders += r.orders;
+      entry.targets++;
+      if (
+        r.category !== "Correctly Managed" &&
+        r.category !== "Monitor" &&
+        r.category !== "Needs More Data"
+      ) {
+        entry.issueCount++;
+      }
+      entry.campaigns.add(r.campaign);
+    }
+    return Array.from(map.entries())
+      .map(
+        ([productCode, data]): ProductKpi => ({
+          productCode,
+          spend: data.spend,
+          sales: data.sales,
+          orders: data.orders,
+          targets: data.targets,
+          issueCount: data.issueCount,
+          acos: data.sales > 0 ? data.spend / data.sales : null,
+          campaigns: data.campaigns.size,
+        }),
+      )
+      .sort((a, b) => {
+        if (sort === "acos") return (b.acos ?? 999) - (a.acos ?? 999);
+        return b[sort] - a[sort];
+      });
+  }, [result.auditRows, sort]);
+
+  const targetAcos = thresholds.targetAcos;
+  const totalSpend = products.reduce((s, p) => s + p.spend, 0);
+  const totalOrders = products.reduce((s, p) => s + p.orders, 0);
+
+  return (
+    <div className="products-page">
+      <section className="panel full">
+        <div className="panel-header">
+          <div>
+            <h2>Product intelligence</h2>
+            <p>
+              Spend, ACoS and bid issues aggregated per product from campaign
+              names. Target ACoS: {percent(targetAcos)}.
+            </p>
+          </div>
+          <label>
+            Sort
+            <select
+              value={sort}
+              onChange={(event) => setSort(event.target.value as typeof sort)}
+            >
+              <option value="spend">Spend</option>
+              <option value="acos">ACoS</option>
+              <option value="issueCount">Issues</option>
+              <option value="targets">Targets</option>
+            </select>
+          </label>
+        </div>
+        <div className="product-summary-bar">
+          <span>
+            <strong>{number(products.length)}</strong> products
+          </span>
+          <span>
+            <strong>{money(totalSpend)}</strong> total spend
+          </span>
+          <span>
+            <strong>{number(totalOrders)}</strong> total orders
+          </span>
+        </div>
+        <div className="table-wrap">
+          <table className="audit-table">
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>Spend</th>
+                <th>Sales</th>
+                <th>Orders</th>
+                <th>ACoS</th>
+                <th>Targets</th>
+                <th>Issues</th>
+                <th>Campaigns</th>
+              </tr>
+            </thead>
+            <tbody>
+              {products.map((p) => {
+                const heatClass = acosHeatClass(p.acos, targetAcos);
+                const issueRate = p.targets > 0 ? p.issueCount / p.targets : 0;
+                return (
+                  <tr key={p.productCode}>
+                    <td className="product-name-cell">{p.productCode}</td>
+                    <td>{money(p.spend)}</td>
+                    <td>{money(p.sales)}</td>
+                    <td>{number(p.orders)}</td>
+                    <td className={`ag-acos ag-acos-${heatClass}`}>
+                      {percent(p.acos)}
+                      <span className="product-acos-target">
+                        {" "}
+                        / {percent(targetAcos)}
+                      </span>
+                    </td>
+                    <td>{number(p.targets)}</td>
+                    <td>
+                      <div className="product-issue-bar">
+                        <div className="product-issue-track">
+                          <div
+                            className="product-issue-fill"
+                            style={{
+                              width: `${Math.min(issueRate * 100, 100)}%`,
+                            }}
+                          />
+                        </div>
+                        <span>{p.issueCount}</span>
+                      </div>
+                    </td>
+                    <td>{number(p.campaigns)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function CampaignCard({
   c,
   auditRows,
@@ -1425,9 +1685,11 @@ function CampaignCard({
 
 function CampaignView({
   result,
+  thresholds,
   onExport,
 }: {
   result: AnalysisResult;
+  thresholds: Thresholds;
   onExport: (kind: string) => void;
 }) {
   const campaigns = result.campaignSummary
@@ -1475,7 +1737,7 @@ function CampaignView({
                 <th>Spend</th>
                 <th>ACoS</th>
                 <th>Targets</th>
-                <th>Problems</th>
+                <th>Issues</th>
                 <th>Unmatched</th>
                 <th>Main issue</th>
               </tr>
@@ -1486,15 +1748,12 @@ function CampaignView({
                 .sort((a, b) => b.issueCount - a.issueCount)
                 .slice(0, 20)
                 .map((row) => (
-                  <tr key={row.campaign}>
-                    <td>{row.campaign}</td>
-                    <td>{money(row.spend)}</td>
-                    <td>{percent(row.acos)}</td>
-                    <td>{number(row.targets)}</td>
-                    <td>{row.issueCount}</td>
-                    <td>{row.unmatched}</td>
-                    <td className="reason-cell">{campaignProblemLine(row)}</td>
-                  </tr>
+                  <AdGroupRow
+                    key={row.campaign}
+                    row={row}
+                    auditRows={result.auditRows}
+                    targetAcos={thresholds.targetAcos}
+                  />
                 ))}
             </tbody>
           </table>
