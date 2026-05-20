@@ -1163,27 +1163,44 @@ tr.why-detail td {
   gap: 16px;
 }
 .campaign-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 .campaign-card {
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 12px 14px;
+  padding: 14px 16px;
   background: var(--surface-2);
+  width: 100%;
 }
 .campaign-card-top {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin-bottom: 6px;
+  gap: 3px;
+  margin-bottom: 8px;
 }
-.campaign-card-top strong {
-  font-size: 13px;
+.campaign-product-code {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--teal);
+}
+.campaign-name {
+  font-size: 13.5px;
+  line-height: 1.45;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+.campaign-card.expanded .campaign-name {
+  -webkit-line-clamp: unset;
+  overflow: visible;
 }
 .campaign-meta {
   color: var(--muted);
@@ -1767,15 +1784,21 @@ tr.why-detail td {
   text-decoration: underline;
 }
 .campaign-drill {
-  margin-top: 8px;
-  border-top: 1px solid var(--line);
-  padding-top: 8px;
+  margin-top: 10px;
+  border-top: 2px solid var(--line);
+  padding-top: 10px;
+  overflow-x: auto;
+}
+.campaign-drill > div {
+  min-width: 600px;
 }
 .parsed-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
 }
 .parsed-chip {
   background: var(--surface-3, #e5e7eb);
@@ -1784,6 +1807,30 @@ tr.why-detail td {
   font-size: 11.5px;
   font-weight: 600;
   color: var(--ink);
+}
+.campaign-show-more {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  background: none;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: center;
+}
+.campaign-show-more:hover {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+.hold-breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 10px;
 }
 
 /* ── AdGroupRow — Phase D ─────────────────────────────────────── */

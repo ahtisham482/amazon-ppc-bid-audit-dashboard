@@ -699,6 +699,144 @@ const MOVE_META: Record<
   },
 };
 
+function shortReason(row: AuditRow): string {
+  const tgt = `"${row.targeting}"`;
+  const acosFmt = row.acos != null ? percent(row.acos) : null;
+  const pct =
+    row.bidChangePct != null
+      ? `${Math.abs(row.bidChangePct * 100).toFixed(0)}%`
+      : null;
+  switch (row.category) {
+    case "Winners Not Scaled":
+      return (
+        [
+          tgt,
+          "is profitable",
+          acosFmt ? `at ${acosFmt} ACoS` : null,
+          pct
+            ? `but the bid was just cut ${pct}`
+            : "but the bid has not been raised",
+        ]
+          .filter(Boolean)
+          .join(" ") + "."
+      );
+    case "Losers Not Reduced":
+      return (
+        [
+          tgt,
+          "is losing money",
+          acosFmt ? `(${acosFmt} ACoS)` : null,
+          "but the bid has not been reduced",
+        ]
+          .filter(Boolean)
+          .join(" ") + "."
+      );
+    case "Profitable Terms Reduced":
+      return (
+        [
+          tgt,
+          "was profitable",
+          pct ? `but the bid was cut ${pct}` : "but the bid was reduced",
+        ]
+          .filter(Boolean)
+          .join(" ") + "."
+      );
+    case "Unprofitable Terms Increased":
+      return (
+        [
+          tgt,
+          "is unprofitable",
+          acosFmt ? `(${acosFmt} ACoS)` : null,
+          pct ? `and the bid was raised ${pct}` : "and the bid was raised",
+        ]
+          .filter(Boolean)
+          .join(" ") + "."
+      );
+    case "Too Many Bid Changes":
+      return `${tgt} had ${row.bidChanges} bid changes — not enough settling time between each change to see results.`;
+    case "No Action Despite Enough Data":
+      return (
+        [
+          tgt,
+          "has enough data",
+          acosFmt ? `(${acosFmt} ACoS)` : null,
+          "but no bid action was taken",
+        ]
+          .filter(Boolean)
+          .join(" ") + "."
+      );
+    case "Needs More Data":
+      return `${tgt} has only ${row.clicks} click${row.clicks !== 1 ? "s" : ""} — not enough to judge yet.`;
+    case "Correctly Managed":
+      return `${tgt} is on target${acosFmt ? ` at ${acosFmt} ACoS` : ""}.`;
+    case "Monitor":
+      return `${tgt} is borderline${acosFmt ? ` (${acosFmt} ACoS)` : ""} — watching for now.`;
+    default:
+      return row.explain.reason;
+  }
+}
+
+function buildDoThis(row: AuditRow): string {
+  const bid = row.latestBid != null ? money2(row.latestBid) : null;
+  const prevBid = row.previousBid != null ? money2(row.previousBid) : null;
+  const acosFmt = row.acos != null ? percent(row.acos) : null;
+  const spendFmt = row.spend > 0 ? money2(row.spend) : null;
+  switch (row.category) {
+    case "Winners Not Scaled":
+      return bid
+        ? `Raise the bid above ${bid} — at this level you are leaving profitable sales on the table every day.`
+        : "Raise the bid — this target is profitable and under-bidding is costing you sales daily.";
+    case "Losers Not Reduced":
+      return spendFmt && acosFmt
+        ? `Cut the bid — ${spendFmt} spent at ${acosFmt} ACoS is above target; every extra click makes the loss bigger.`
+        : "Cut the bid — this target is unprofitable; every click makes the loss bigger.";
+    case "Profitable Terms Reduced":
+      return prevBid && bid
+        ? `Restore the bid toward ${prevBid} — it was profitable before the cut to ${bid} and you are now missing sales.`
+        : "Restore the bid — it was cut while the target was profitable, and you are now missing sales.";
+    case "Unprofitable Terms Increased":
+      return acosFmt
+        ? `Reduce the bid — at ${acosFmt} ACoS this target loses money on every sale, and a higher bid buys more of that loss.`
+        : "Reduce the bid — this target is unprofitable; raising it makes the problem worse.";
+    case "Too Many Bid Changes":
+      return `Stop touching this bid — ${row.bidChanges} changes means results never settle before the next reaction. Leave it alone for at least 14 days.`;
+    case "No Action Despite Enough Data":
+      return acosFmt
+        ? `Act now — ${acosFmt} ACoS with enough clicks means the signal is clear; waiting longer just delays the fix.`
+        : "Act now — there is enough data to decide; holding off is leaving money on the table.";
+    case "Needs More Data":
+      return "Wait — do not change the bid yet. Let it run until there is enough data to judge it fairly.";
+    case "Correctly Managed":
+      return "Leave it alone — this is working as intended. No action needed.";
+    case "Monitor":
+      return "Watch, do not act yet — one more week of data will make the right move clearer.";
+    default:
+      return row.explain.whyAction;
+  }
+}
+
+function windowExplain(row: AuditRow): string {
+  const imp = row.impact;
+  if (imp.status !== "Incomplete window") return row.explain.whyConfidence;
+  const postDays = imp.postDays;
+  const neededDays = Math.max(imp.preDays, 14);
+  const remaining = Math.max(0, neededDays - postDays);
+  let dateNote = "";
+  if (row.lastBidChangeDate) {
+    const completeDate = new Date(row.lastBidChangeDate.getTime());
+    completeDate.setDate(completeDate.getDate() + neededDays);
+    dateNote = ` Full picture available after ${completeDate.toLocaleDateString("en-US", { month: "short", day: "numeric" })}.`;
+  }
+  return (
+    `Bid changed ${postDays} day${postDays !== 1 ? "s" : ""} ago. ` +
+    `We compare ${neededDays} days before vs. after each bid move to measure impact — ` +
+    (remaining > 0
+      ? `${remaining} more day${remaining !== 1 ? "s" : ""} needed.`
+      : "window just completed.") +
+    dateNote
+  );
+}
+
 function WhyCard({ row }: { row: AuditRow }) {
   const [showMore, setShowMore] = useState(false);
   const bidArrow =
@@ -713,7 +851,7 @@ function WhyCard({ row }: { row: AuditRow }) {
     <div className="why-card">
       <div className="why-row">
         <span className="why-lbl">WHAT</span>
-        <span>{row.explain.reason}</span>
+        <span>{shortReason(row)}</span>
       </div>
       <div className="why-row">
         <span className="why-lbl">NUMBERS</span>
@@ -763,7 +901,7 @@ function WhyCard({ row }: { row: AuditRow }) {
       )}
       <div className="why-row">
         <span className="why-lbl">DO THIS</span>
-        <strong className="why-do-this">{row.explain.whyAction}</strong>
+        <strong className="why-do-this">{buildDoThis(row)}</strong>
       </div>
       <button
         type="button"
@@ -784,7 +922,7 @@ function WhyCard({ row }: { row: AuditRow }) {
           )}
           {row.explain.whyConfidence && (
             <p>
-              <strong>Confidence:</strong> {row.explain.whyConfidence}
+              <strong>Confidence:</strong> {windowExplain(row)}
             </p>
           )}
         </div>
@@ -860,6 +998,43 @@ function MoveColumn({
             ? `≈ ${money(totalMetric)} spend at risk`
             : "No action needed right now"}
       </div>
+      {move === "HOLD" && (
+        <div className="hold-breakdown">
+          {(
+            [
+              {
+                label: "bid changed recently",
+                count: rows.filter((r) => r.category === "Too Many Bid Changes")
+                  .length,
+                tone: "amber",
+              },
+              {
+                label: "not enough data yet",
+                count: rows.filter((r) => r.category === "Needs More Data")
+                  .length,
+                tone: "slate",
+              },
+              {
+                label: "correctly managed",
+                count: rows.filter((r) => r.category === "Correctly Managed")
+                  .length,
+                tone: "good",
+              },
+              {
+                label: "watch",
+                count: rows.filter((r) => r.category === "Monitor").length,
+                tone: "slate",
+              },
+            ] as Array<{ label: string; count: number; tone: string }>
+          )
+            .filter((b) => b.count > 0)
+            .map((b) => (
+              <span key={b.label} className={`chip ${b.tone} xs`}>
+                {number(b.count)} {b.label}
+              </span>
+            ))}
+        </div>
+      )}
       <div className="move-list">
         {top.length === 0 && <p className="muted-note">Nothing here. 🎉</p>}
         {top.map((row) => (
@@ -1616,7 +1791,10 @@ function CampaignCard({
   return (
     <div className={`campaign-card${expanded ? " expanded" : ""}`}>
       <div className="campaign-card-top">
-        <strong title={c.campaign}>{c.campaign}</strong>
+        {parsed.valid && parsed.productCode && (
+          <span className="campaign-product-code">{parsed.productCode}</span>
+        )}
+        <strong className="campaign-name">{c.campaign}</strong>
         <span className="campaign-meta">
           {money(c.spend)} spend · {percent(c.acos)} ACoS · {number(c.targets)}{" "}
           {c.targets === 1 ? "target" : "targets"}
@@ -1692,10 +1870,15 @@ function CampaignView({
   thresholds: Thresholds;
   onExport: (kind: string) => void;
 }) {
-  const campaigns = result.campaignSummary
+  const [showAll, setShowAll] = useState(false);
+  const INITIAL_LIMIT = 6;
+  const allCampaigns = result.campaignSummary
     .slice()
-    .sort((a, b) => b.issueCount - a.issueCount)
-    .slice(0, 18);
+    .sort((a, b) => b.issueCount - a.issueCount);
+  const campaigns = showAll
+    ? allCampaigns
+    : allCampaigns.slice(0, INITIAL_LIMIT);
+  const hiddenCount = allCampaigns.length - INITIAL_LIMIT;
 
   return (
     <div className="campaign-page">
@@ -1720,6 +1903,24 @@ function CampaignView({
             <CampaignCard key={c.campaign} c={c} auditRows={result.auditRows} />
           ))}
         </div>
+        {!showAll && hiddenCount > 0 && (
+          <button
+            type="button"
+            className="campaign-show-more"
+            onClick={() => setShowAll(true)}
+          >
+            Show {hiddenCount} more campaign{hiddenCount !== 1 ? "s" : ""} ▾
+          </button>
+        )}
+        {showAll && hiddenCount > 0 && (
+          <button
+            type="button"
+            className="campaign-show-more"
+            onClick={() => setShowAll(false)}
+          >
+            Show fewer campaigns ▴
+          </button>
+        )}
       </section>
 
       <section className="panel full">
