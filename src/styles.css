@@ -1770,6 +1770,43 @@ tr.why-detail td {
   color: var(--ink);
 }
 
+/* Fix 2: constrain WhyCard inside All Targets td so it doesn't span full row width */
+tr.why-detail td .why-card {
+  max-width: 860px;
+  background: transparent;
+  border-top: none;
+  padding: 8px 0;
+}
+
+/* Fix 2: prevent BID MOVE line from wrapping */
+.why-bid {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+/* Fix 2: let content spans in .why-row fill remaining space without overflow */
+.why-row > span:last-child,
+.why-row > .why-do-this {
+  flex: 1;
+  min-width: 0;
+}
+
+.why-pills {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Fix 2: threshold note highlight (shown above Rule text for Too Many Bid Changes) */
+.why-threshold-note {
+  font-size: 11.5px;
+  color: #374151;
+  background: var(--amber-soft);
+  border-left: 3px solid var(--amber);
+  padding: 4px 8px;
+  border-radius: 0 4px 4px 0;
+  margin: 2px 0;
+}
+
 /* ── CampaignCard drilldown ───────────────────────────────────── */
 .campaign-drill-btn {
   background: none;
@@ -1936,6 +1973,131 @@ tr.why-detail td {
   height: 100%;
   background: var(--red);
   border-radius: 99px;
+}
+
+/* ── Product Intelligence — interactive KPI strip ─────────────── */
+.product-kpi-strip {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.product-kpi-card {
+  flex: 1 1 140px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 120px;
+}
+.product-kpi-card.bad {
+  border-color: #fca5a5;
+  background: var(--red-soft);
+}
+.product-kpi-card.warn {
+  border-color: #fcd34d;
+  background: var(--amber-soft);
+}
+.product-kpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.product-kpi-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1.1;
+}
+
+/* ── Scatter chart tooltip ───────────────────────────────────── */
+.scatter-tooltip {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+.scatter-tooltip strong {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+/* ── Product table filter bar ────────────────────────────────── */
+.product-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 10px;
+}
+.product-filter-bar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.product-filter-bar select {
+  padding: 4px 8px;
+  font-size: 12.5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+}
+.product-issues-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.product-filter-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── Product table row states ────────────────────────────────── */
+.product-row-clickable {
+  cursor: pointer;
+}
+.product-row-clickable:hover td {
+  background: var(--surface-2);
+}
+.product-row-open td {
+  background: var(--surface-2);
+  font-weight: 600;
+}
+
+/* ── Sortable column headers ─────────────────────────────────── */
+.sort-th {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.sort-th:hover {
+  color: var(--teal);
+}
+.sort-active {
+  color: var(--teal);
+}
+.sort-arrow {
+  font-size: 10px;
+  opacity: 0.7;
+  margin-left: 2px;
 }
 
 @media (max-width: 1180px) {

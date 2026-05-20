@@ -28,10 +28,14 @@ import {
   Cell,
   LabelList,
   Legend,
+  ReferenceLine,
   ResponsiveContainer,
+  Scatter,
+  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
+  ZAxis,
 } from "recharts";
 import {
   analyzeFiles,
@@ -651,7 +655,11 @@ function Dashboard({
         <>
           <StatusStrip result={result} />
           <KpiGrid result={result} />
-          <AllTargets result={result} onExport={onExport} />
+          <AllTargets
+            result={result}
+            onExport={onExport}
+            lookbackDays={thresholds.lookbackDays}
+          />
         </>
       )}
       {activeSection === "Campaigns" && (
@@ -699,7 +707,7 @@ const MOVE_META: Record<
   },
 };
 
-function shortReason(row: AuditRow): string {
+function shortReason(row: AuditRow, lookbackDays: number): string {
   const tgt = `"${row.targeting}"`;
   const acosFmt = row.acos != null ? percent(row.acos) : null;
   const pct =
@@ -753,7 +761,7 @@ function shortReason(row: AuditRow): string {
           .join(" ") + "."
       );
     case "Too Many Bid Changes":
-      return `${tgt} had ${row.bidChanges} bid changes — not enough settling time between each change to see results.`;
+      return `${tgt} had ${row.bidChanges} bid changes in the last ${lookbackDays} days — bids were changed again before the previous change had time to show results.`;
     case "No Action Despite Enough Data":
       return (
         [
@@ -776,7 +784,7 @@ function shortReason(row: AuditRow): string {
   }
 }
 
-function buildDoThis(row: AuditRow): string {
+function buildDoThis(row: AuditRow, lookbackDays: number): string {
   const bid = row.latestBid != null ? money2(row.latestBid) : null;
   const prevBid = row.previousBid != null ? money2(row.previousBid) : null;
   const acosFmt = row.acos != null ? percent(row.acos) : null;
@@ -798,8 +806,30 @@ function buildDoThis(row: AuditRow): string {
       return acosFmt
         ? `Reduce the bid — at ${acosFmt} ACoS this target loses money on every sale, and a higher bid buys more of that loss.`
         : "Reduce the bid — this target is unprofitable; raising it makes the problem worse.";
-    case "Too Many Bid Changes":
-      return `Stop touching this bid — ${row.bidChanges} changes means results never settle before the next reaction. Leave it alone for at least 14 days.`;
+    case "Too Many Bid Changes": {
+      const daysSince =
+        row.lastBidChangeDate != null
+          ? Math.floor(
+              (Date.now() - row.lastBidChangeDate.getTime()) / 86_400_000,
+            )
+          : null;
+      const nextReview =
+        row.lastBidChangeDate != null
+          ? new Date(
+              row.lastBidChangeDate.getTime() + lookbackDays * 86_400_000,
+            ).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+          : null;
+      return [
+        `Stop changing this bid — it moved ${row.bidChanges} times in ${lookbackDays} days.`,
+        `A bid needs at least ${lookbackDays} uninterrupted days to generate clean data.`,
+        daysSince !== null
+          ? `Last change was ${daysSince} day${daysSince !== 1 ? "s" : ""} ago.`
+          : null,
+        nextReview ? `Next review date: ${nextReview}.` : null,
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
     case "No Action Despite Enough Data":
       return acosFmt
         ? `Act now — ${acosFmt} ACoS with enough clicks means the signal is clear; waiting longer just delays the fix.`
@@ -815,11 +845,11 @@ function buildDoThis(row: AuditRow): string {
   }
 }
 
-function windowExplain(row: AuditRow): string {
+function windowExplain(row: AuditRow, lookbackDays: number): string {
   const imp = row.impact;
   if (imp.status !== "Incomplete window") return row.explain.whyConfidence;
   const postDays = imp.postDays;
-  const neededDays = Math.max(imp.preDays, 14);
+  const neededDays = Math.max(imp.preDays, lookbackDays);
   const remaining = Math.max(0, neededDays - postDays);
   let dateNote = "";
   if (row.lastBidChangeDate) {
@@ -837,7 +867,13 @@ function windowExplain(row: AuditRow): string {
   );
 }
 
-function WhyCard({ row }: { row: AuditRow }) {
+function WhyCard({
+  row,
+  lookbackDays = 7,
+}: {
+  row: AuditRow;
+  lookbackDays?: number;
+}) {
   const [showMore, setShowMore] = useState(false);
   const bidArrow =
     row.latestBid != null && row.previousBid != null
@@ -851,7 +887,7 @@ function WhyCard({ row }: { row: AuditRow }) {
     <div className="why-card">
       <div className="why-row">
         <span className="why-lbl">WHAT</span>
-        <span>{shortReason(row)}</span>
+        <span>{shortReason(row, lookbackDays)}</span>
       </div>
       <div className="why-row">
         <span className="why-lbl">NUMBERS</span>
@@ -901,7 +937,9 @@ function WhyCard({ row }: { row: AuditRow }) {
       )}
       <div className="why-row">
         <span className="why-lbl">DO THIS</span>
-        <strong className="why-do-this">{buildDoThis(row)}</strong>
+        <strong className="why-do-this">
+          {buildDoThis(row, lookbackDays)}
+        </strong>
       </div>
       <button
         type="button"
@@ -912,6 +950,12 @@ function WhyCard({ row }: { row: AuditRow }) {
       </button>
       {showMore && (
         <div className="why-detail-extra">
+          {row.category === "Too Many Bid Changes" && (
+            <p className="why-threshold-note">
+              <strong>Threshold:</strong> more than 3 bid changes in a{" "}
+              {lookbackDays}-day window triggers this flag.
+            </p>
+          )}
           <p>
             <strong>Rule:</strong> {row.explain.rule}
           </p>
@@ -922,7 +966,7 @@ function WhyCard({ row }: { row: AuditRow }) {
           )}
           {row.explain.whyConfidence && (
             <p>
-              <strong>Confidence:</strong> {windowExplain(row)}
+              <strong>Confidence:</strong> {windowExplain(row, lookbackDays)}
             </p>
           )}
         </div>
@@ -931,7 +975,13 @@ function WhyCard({ row }: { row: AuditRow }) {
   );
 }
 
-function MoveItem({ row }: { row: AuditRow }) {
+function MoveItem({
+  row,
+  lookbackDays,
+}: {
+  row: AuditRow;
+  lookbackDays: number;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <div className={`move-item${open ? " open" : ""}`}>
@@ -961,7 +1011,7 @@ function MoveItem({ row }: { row: AuditRow }) {
         </span>
         <span className="move-toggle">{open ? "Hide" : "Why?"}</span>
       </button>
-      {open && <WhyCard row={row} />}
+      {open && <WhyCard row={row} lookbackDays={lookbackDays} />}
     </div>
   );
 }
@@ -970,10 +1020,12 @@ function MoveColumn({
   move,
   rows,
   onSeeAll,
+  lookbackDays,
 }: {
   move: Move;
   rows: AuditRow[];
   onSeeAll: () => void;
+  lookbackDays: number;
 }) {
   const meta = MOVE_META[move];
   const sorted = rows.slice().sort((a, b) => b.priorityScore - a.priorityScore);
@@ -1041,6 +1093,7 @@ function MoveColumn({
           <MoveItem
             key={`${row.campaign}-${row.adGroup}-${row.targeting}-${row.matchType}`}
             row={row}
+            lookbackDays={lookbackDays}
           />
         ))}
       </div>
@@ -1116,16 +1169,19 @@ function ActionPlan({
           move="PUSH"
           rows={push}
           onSeeAll={() => onNavigate("All Targets")}
+          lookbackDays={thresholds.lookbackDays}
         />
         <MoveColumn
           move="CUT"
           rows={cut}
           onSeeAll={() => onNavigate("All Targets")}
+          lookbackDays={thresholds.lookbackDays}
         />
         <MoveColumn
           move="HOLD"
           rows={hold}
           onSeeAll={() => onNavigate("All Targets")}
+          lookbackDays={thresholds.lookbackDays}
         />
       </div>
       <p className="plan-foot">
@@ -1186,9 +1242,11 @@ const ALL_FILTERS: Array<{
 function AllTargets({
   result,
   onExport,
+  lookbackDays = 7,
 }: {
   result: AnalysisResult;
   onExport: (kind: string) => void;
+  lookbackDays?: number;
 }) {
   const [filter, setFilter] = useState("all");
   const active = ALL_FILTERS.find((f) => f.id === filter) ?? ALL_FILTERS[0];
@@ -1228,7 +1286,7 @@ function AllTargets({
           );
         })}
       </div>
-      <ActionTable rows={rows} />
+      <ActionTable rows={rows} lookbackDays={lookbackDays} />
     </section>
   );
 }
@@ -1343,9 +1401,11 @@ function gradeFor(score: number) {
 function ActionTable({
   rows,
   compact = false,
+  lookbackDays = 7,
 }: {
   rows: AuditRow[];
   compact?: boolean;
+  lookbackDays?: number;
 }) {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All");
@@ -1498,7 +1558,7 @@ function ActionTable({
                   {isOpen && (
                     <tr className="why-detail">
                       <td colSpan={13}>
-                        <WhyCard row={row} />
+                        <WhyCard row={row} lookbackDays={lookbackDays} />
                       </td>
                     </tr>
                   )}
@@ -1621,11 +1681,27 @@ function ProductsView({
   result: AnalysisResult;
   thresholds: Thresholds;
 }) {
-  const [sort, setSort] = useState<"spend" | "acos" | "issueCount" | "targets">(
-    "spend",
-  );
+  const targetAcos = thresholds.targetAcos;
+  const [sortField, setSortField] = useState<
+    "spend" | "sales" | "orders" | "acos" | "issueCount" | "targets"
+  >("spend");
+  const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [issuesOnly, setIssuesOnly] = useState(false);
+  const [clickFilter, setClickFilter] = useState<string | null>(null);
+  const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
 
-  const products = useMemo<ProductKpi[]>(() => {
+  function handleSort(field: typeof sortField) {
+    if (field === sortField) {
+      setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setSortField(field);
+      setSortDir("desc");
+    }
+  }
+
+  const allProducts = useMemo<ProductKpi[]>(() => {
     const map = new Map<
       string,
       {
@@ -1663,75 +1739,305 @@ function ProductsView({
       }
       entry.campaigns.add(r.campaign);
     }
-    return Array.from(map.entries())
-      .map(
-        ([productCode, data]): ProductKpi => ({
-          productCode,
-          spend: data.spend,
-          sales: data.sales,
-          orders: data.orders,
-          targets: data.targets,
-          issueCount: data.issueCount,
-          acos: data.sales > 0 ? data.spend / data.sales : null,
-          campaigns: data.campaigns.size,
-        }),
-      )
-      .sort((a, b) => {
-        if (sort === "acos") return (b.acos ?? 999) - (a.acos ?? 999);
-        return b[sort] - a[sort];
-      });
-  }, [result.auditRows, sort]);
+    return Array.from(map.entries()).map(
+      ([productCode, data]): ProductKpi => ({
+        productCode,
+        spend: data.spend,
+        sales: data.sales,
+        orders: data.orders,
+        targets: data.targets,
+        issueCount: data.issueCount,
+        acos: data.sales > 0 ? data.spend / data.sales : null,
+        campaigns: data.campaigns.size,
+      }),
+    );
+  }, [result.auditRows]);
 
-  const targetAcos = thresholds.targetAcos;
-  const totalSpend = products.reduce((s, p) => s + p.spend, 0);
-  const totalOrders = products.reduce((s, p) => s + p.orders, 0);
+  const products = useMemo(() => {
+    let ps = allProducts;
+    if (clickFilter) ps = ps.filter((p) => p.productCode === clickFilter);
+    if (search)
+      ps = ps.filter((p) =>
+        p.productCode.toLowerCase().includes(search.toLowerCase()),
+      );
+    if (statusFilter === "Over target")
+      ps = ps.filter((p) => p.acos != null && p.acos >= targetAcos);
+    else if (statusFilter === "Under target")
+      ps = ps.filter((p) => p.acos != null && p.acos < targetAcos);
+    else if (statusFilter === "No data") ps = ps.filter((p) => p.acos == null);
+    if (issuesOnly) ps = ps.filter((p) => p.issueCount > 0);
+    return ps.slice().sort((a, b) => {
+      const mult = sortDir === "desc" ? 1 : -1;
+      if (sortField === "acos")
+        return mult * ((b.acos ?? 999) - (a.acos ?? 999));
+      return mult * (b[sortField] - a[sortField]);
+    });
+  }, [
+    allProducts,
+    clickFilter,
+    search,
+    statusFilter,
+    issuesOnly,
+    sortField,
+    sortDir,
+    targetAcos,
+  ]);
+
+  const overTarget = allProducts.filter(
+    (p) => p.acos != null && p.acos >= targetAcos,
+  ).length;
+  const totalSpend = allProducts.reduce((s, p) => s + p.spend, 0);
+  const totalOrders = allProducts.reduce((s, p) => s + p.orders, 0);
+  const wastedSpend = allProducts.reduce((s, p) => {
+    if (p.acos == null || p.acos <= targetAcos) return s;
+    return s + p.spend * ((p.acos - targetAcos) / p.acos);
+  }, 0);
+
+  const scatterData = allProducts
+    .filter((p) => p.acos != null)
+    .map((p) => ({
+      x: p.spend,
+      y: (p.acos as number) * 100,
+      z: Math.max(p.targets * 5, 40),
+      name: p.productCode,
+      spend: p.spend,
+      orders: p.orders,
+      issueCount: p.issueCount,
+      fill:
+        (p.acos as number) >= targetAcos * 1.5
+          ? "#ef4444"
+          : (p.acos as number) >= targetAcos
+            ? "#f59e0b"
+            : "#10b981",
+    }));
+
+  function SortTh({
+    field,
+    label,
+  }: {
+    field: typeof sortField;
+    label: string;
+  }) {
+    const active = sortField === field;
+    return (
+      <th
+        className={`sort-th${active ? " sort-active" : ""}`}
+        onClick={() => handleSort(field)}
+      >
+        {label}
+        <span className="sort-arrow">
+          {active ? (sortDir === "desc" ? " ▾" : " ▴") : " ↕"}
+        </span>
+      </th>
+    );
+  }
 
   return (
     <div className="products-page">
+      {/* KPI summary strip */}
+      <div className="product-kpi-strip">
+        <div className="product-kpi-card">
+          <span className="product-kpi-label">Products</span>
+          <strong className="product-kpi-value">
+            {number(allProducts.length)}
+          </strong>
+        </div>
+        <div className="product-kpi-card bad">
+          <span className="product-kpi-label">Over target ACoS</span>
+          <strong className="product-kpi-value">{number(overTarget)}</strong>
+        </div>
+        <div className="product-kpi-card">
+          <span className="product-kpi-label">Total spend</span>
+          <strong className="product-kpi-value">{money(totalSpend)}</strong>
+        </div>
+        <div className="product-kpi-card warn">
+          <span className="product-kpi-label">Est. wasted spend</span>
+          <strong className="product-kpi-value">{money(wastedSpend)}</strong>
+        </div>
+        <div className="product-kpi-card">
+          <span className="product-kpi-label">Total orders</span>
+          <strong className="product-kpi-value">{number(totalOrders)}</strong>
+        </div>
+      </div>
+
+      {/* Scatter chart */}
       <section className="panel full">
         <div className="panel-header">
           <div>
-            <h2>Product intelligence</h2>
+            <h2>Spend vs ACoS</h2>
             <p>
-              Spend, ACoS and bid issues aggregated per product from campaign
-              names. Target ACoS: {percent(targetAcos)}.
+              Each dot = one product. Size = number of targets. Click a dot to
+              filter the table below. Dashed line = target ACoS (
+              {percent(targetAcos)}).
             </p>
           </div>
-          <label>
-            Sort
-            <select
-              value={sort}
-              onChange={(event) => setSort(event.target.value as typeof sort)}
+          {clickFilter && (
+            <button
+              className="button ghost"
+              onClick={() => setClickFilter(null)}
             >
-              <option value="spend">Spend</option>
-              <option value="acos">ACoS</option>
-              <option value="issueCount">Issues</option>
-              <option value="targets">Targets</option>
+              Clear filter ✕
+            </button>
+          )}
+        </div>
+        <ResponsiveContainer width="100%" height={260}>
+          <ScatterChart margin={{ top: 10, right: 20, bottom: 10, left: 10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+            <XAxis
+              dataKey="x"
+              name="Spend"
+              tickFormatter={(v) => `$${v.toFixed(0)}`}
+              label={{
+                value: "Spend ($)",
+                position: "insideBottom",
+                offset: -2,
+                fontSize: 11,
+              }}
+            />
+            <YAxis
+              dataKey="y"
+              name="ACoS"
+              unit="%"
+              label={{
+                value: "ACoS %",
+                angle: -90,
+                position: "insideLeft",
+                fontSize: 11,
+              }}
+            />
+            <ZAxis dataKey="z" range={[40, 300]} />
+            <ReferenceLine
+              y={targetAcos * 100}
+              stroke="#ef4444"
+              strokeDasharray="5 3"
+              label={{
+                value: "Target",
+                position: "right",
+                fill: "#ef4444",
+                fontSize: 11,
+              }}
+            />
+            <Tooltip
+              cursor={{ strokeDasharray: "3 3" }}
+              content={({ active, payload }) => {
+                if (!active || !payload?.length) return null;
+                const d = payload[0].payload;
+                return (
+                  <div className="scatter-tooltip">
+                    <strong>{d.name}</strong>
+                    <div>Spend: {money(d.spend)}</div>
+                    <div>ACoS: {d.y.toFixed(1)}%</div>
+                    <div>Orders: {number(d.orders)}</div>
+                    <div>Issues: {d.issueCount}</div>
+                  </div>
+                );
+              }}
+            />
+            <Scatter
+              data={scatterData}
+              shape={(rawProps: unknown) => {
+                const props = rawProps as Record<string, unknown>;
+                const cx = props.cx as number;
+                const cy = props.cy as number;
+                const payload = props.payload as {
+                  z: number;
+                  fill: string;
+                  name: string;
+                };
+                const r = Math.sqrt(payload.z / Math.PI);
+                const isSelected = clickFilter === payload.name;
+                return (
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={r}
+                    fill={payload.fill}
+                    fillOpacity={0.75}
+                    stroke={isSelected ? "#1e293b" : "transparent"}
+                    strokeWidth={2}
+                    style={{ cursor: "pointer" }}
+                    onClick={() =>
+                      setClickFilter((prev) =>
+                        prev === payload.name ? null : payload.name,
+                      )
+                    }
+                  />
+                );
+              }}
+            />
+          </ScatterChart>
+        </ResponsiveContainer>
+      </section>
+
+      {/* Table */}
+      <section className="panel full">
+        <div className="panel-header">
+          <div>
+            <h2>Product breakdown</h2>
+            <p>Click any row to see its individual targets.</p>
+          </div>
+        </div>
+
+        {/* Filter bar */}
+        <div className="product-filter-bar">
+          <label className="search-box">
+            <Search size={14} />
+            <input
+              placeholder="Search product"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </label>
+          <label>
+            Status
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+            >
+              <option>All</option>
+              <option>Over target</option>
+              <option>Under target</option>
+              <option>No data</option>
             </select>
           </label>
+          <label className="product-issues-toggle">
+            <input
+              type="checkbox"
+              checked={issuesOnly}
+              onChange={(e) => setIssuesOnly(e.target.checked)}
+            />
+            Issues only
+          </label>
+          {(search || statusFilter !== "All" || issuesOnly || clickFilter) && (
+            <button
+              className="button ghost"
+              onClick={() => {
+                setSearch("");
+                setStatusFilter("All");
+                setIssuesOnly(false);
+                setClickFilter(null);
+              }}
+            >
+              Reset ✕
+            </button>
+          )}
+          <span className="product-filter-count">
+            {products.length} / {allProducts.length} products
+          </span>
         </div>
-        <div className="product-summary-bar">
-          <span>
-            <strong>{number(products.length)}</strong> products
-          </span>
-          <span>
-            <strong>{money(totalSpend)}</strong> total spend
-          </span>
-          <span>
-            <strong>{number(totalOrders)}</strong> total orders
-          </span>
-        </div>
+
         <div className="table-wrap">
           <table className="audit-table">
             <thead>
               <tr>
                 <th>Product</th>
-                <th>Spend</th>
-                <th>Sales</th>
-                <th>Orders</th>
-                <th>ACoS</th>
-                <th>Targets</th>
-                <th>Issues</th>
+                <SortTh field="spend" label="Spend" />
+                <SortTh field="sales" label="Sales" />
+                <SortTh field="orders" label="Orders" />
+                <SortTh field="acos" label="ACoS" />
+                <th>Status</th>
+                <SortTh field="targets" label="Targets" />
+                <SortTh field="issueCount" label="Issue rate" />
                 <th>Campaigns</th>
               </tr>
             </thead>
@@ -1739,35 +2045,79 @@ function ProductsView({
               {products.map((p) => {
                 const heatClass = acosHeatClass(p.acos, targetAcos);
                 const issueRate = p.targets > 0 ? p.issueCount / p.targets : 0;
+                const isExpanded = expandedProduct === p.productCode;
+                const productRows = result.auditRows.filter(
+                  (r) =>
+                    (parseCampaignName(r.campaign).productCode ||
+                      r.campaign) === p.productCode,
+                );
                 return (
-                  <tr key={p.productCode}>
-                    <td className="product-name-cell">{p.productCode}</td>
-                    <td>{money(p.spend)}</td>
-                    <td>{money(p.sales)}</td>
-                    <td>{number(p.orders)}</td>
-                    <td className={`ag-acos ag-acos-${heatClass}`}>
-                      {percent(p.acos)}
-                      <span className="product-acos-target">
-                        {" "}
-                        / {percent(targetAcos)}
-                      </span>
-                    </td>
-                    <td>{number(p.targets)}</td>
-                    <td>
-                      <div className="product-issue-bar">
-                        <div className="product-issue-track">
-                          <div
-                            className="product-issue-fill"
-                            style={{
-                              width: `${Math.min(issueRate * 100, 100)}%`,
-                            }}
-                          />
+                  <Fragment key={p.productCode}>
+                    <tr
+                      className={`product-row${isExpanded ? " product-row-open" : ""}${productRows.length > 0 ? " product-row-clickable" : ""}`}
+                      onClick={() =>
+                        productRows.length > 0 &&
+                        setExpandedProduct(isExpanded ? null : p.productCode)
+                      }
+                    >
+                      <td className="product-name-cell">
+                        {productRows.length > 0 && (
+                          <span className="ag-toggle">
+                            {isExpanded ? "▾" : "▸"}
+                          </span>
+                        )}
+                        {p.productCode}
+                      </td>
+                      <td>{money(p.spend)}</td>
+                      <td>{money(p.sales)}</td>
+                      <td>{number(p.orders)}</td>
+                      <td className={`ag-acos ag-acos-${heatClass}`}>
+                        {percent(p.acos)}
+                        <span className="product-acos-target">
+                          {" "}
+                          / {percent(targetAcos)}
+                        </span>
+                      </td>
+                      <td>
+                        {p.acos == null ? (
+                          <span className="chip slate">No data</span>
+                        ) : p.acos >= targetAcos ? (
+                          <span className="chip bad">Over target</span>
+                        ) : (
+                          <span className="chip good">On target</span>
+                        )}
+                      </td>
+                      <td>{number(p.targets)}</td>
+                      <td>
+                        <div className="product-issue-bar">
+                          <div className="product-issue-track">
+                            <div
+                              className="product-issue-fill"
+                              style={{
+                                width: `${Math.min(issueRate * 100, 100)}%`,
+                              }}
+                            />
+                          </div>
+                          <span>
+                            {p.issueCount} / {p.targets} ·{" "}
+                            {Math.round(issueRate * 100)}%
+                          </span>
                         </div>
-                        <span>{p.issueCount}</span>
-                      </div>
-                    </td>
-                    <td>{number(p.campaigns)}</td>
-                  </tr>
+                      </td>
+                      <td>{number(p.campaigns)}</td>
+                    </tr>
+                    {isExpanded && productRows.length > 0 && (
+                      <tr className="ag-expand-row">
+                        <td colSpan={9} className="ag-expand-cell">
+                          <ActionTable
+                            rows={productRows}
+                            compact
+                            lookbackDays={thresholds.lookbackDays}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>
