@@ -1770,6 +1770,43 @@ tr.why-detail td {
   color: var(--ink);
 }
 
+/* ── Bid Timeline Chart ───────────────────────────────────────── */
+.why-timeline-section {
+  border-top: 1px dashed var(--line);
+  padding-top: 8px;
+  margin-top: 4px;
+}
+
+.bid-timeline-chart {
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.bid-timeline-no-data {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 4px 0 6px;
+  margin: 0;
+}
+
+.bid-timeline-legend {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 0 2px 8px;
+}
+
+@media (max-width: 760px) {
+  .bid-timeline-chart {
+    display: none;
+  }
+  .why-timeline-section {
+    display: none;
+  }
+}
+
 /* Fix 2: constrain WhyCard inside All Targets td so it doesn't span full row width */
 tr.why-detail td .why-card {
   max-width: 860px;

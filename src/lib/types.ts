@@ -156,6 +156,8 @@ export interface RowExplain {
 export interface AuditRow extends PerformanceAggregate {
   matchLevel: MatchLevel;
   latestHistory: HistoryRow | null;
+  /** All bid changes for this target, sorted oldest → newest. */
+  allBidChanges: HistoryRow[];
   bidChanges: number;
   previousBid: number | null;
   latestBid: number | null;

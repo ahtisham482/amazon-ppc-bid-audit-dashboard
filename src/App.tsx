@@ -26,8 +26,10 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
   LabelList,
   Legend,
+  Line,
   ReferenceLine,
   ResponsiveContainer,
   Scatter,
@@ -659,6 +661,7 @@ function Dashboard({
             result={result}
             onExport={onExport}
             lookbackDays={thresholds.lookbackDays}
+            targetAcos={thresholds.targetAcos}
           />
         </>
       )}
@@ -867,14 +870,301 @@ function windowExplain(row: AuditRow, lookbackDays: number): string {
   );
 }
 
+// ── Per-target bid timeline chart ──────────────────────────────────────────
+type DayAgg = { spend: number; sales: number; orders: number; label: string };
+
+function BidTimelineChart({
+  row,
+  targetAcos,
+}: {
+  row: AuditRow;
+  targetAcos: number;
+}) {
+  if (row.dailyRows.length < 3) {
+    return (
+      <p className="bid-timeline-no-data">
+        Daily data not available — re-export the targeting report with daily
+        granularity to see the timeline.
+      </p>
+    );
+  }
+
+  // Aggregate daily rows by calendar date
+  const dayMap = new Map<string, DayAgg>();
+  for (const dr of row.dailyRows) {
+    if (!dr.date) continue;
+    const k = dr.date.toISOString().slice(0, 10);
+    const ex = dayMap.get(k);
+    if (ex) {
+      ex.spend += dr.spend;
+      ex.sales += dr.sales;
+      ex.orders += dr.orders;
+    } else {
+      dayMap.set(k, {
+        spend: dr.spend,
+        sales: dr.sales,
+        orders: dr.orders,
+        label: dr.date.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+          timeZone: "UTC",
+        }),
+      });
+    }
+  }
+
+  // Index bid changes by date; ensure their dates exist in dayMap
+  const bidChangeMap = new Map<string, (typeof row.allBidChanges)[0]>();
+  for (const h of row.allBidChanges) {
+    if (!h.time) continue;
+    const k = h.time.toISOString().slice(0, 10);
+    bidChangeMap.set(k, h);
+    if (!dayMap.has(k)) {
+      dayMap.set(k, {
+        spend: 0,
+        sales: 0,
+        orders: 0,
+        label: h.time.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+          timeZone: "UTC",
+        }),
+      });
+    }
+  }
+
+  const allDateKeys = [...dayMap.keys()].sort();
+  const chartData = allDateKeys.map((k) => {
+    const d = dayMap.get(k)!;
+    return {
+      dateKey: k,
+      label: d.label,
+      spend: d.spend > 0 ? d.spend : null,
+      acos: d.sales > 0 ? (d.spend / d.sales) * 100 : null,
+      orders: d.orders > 0 ? d.orders : null,
+    };
+  });
+
+  const tickInterval =
+    allDateKeys.length > 20
+      ? Math.ceil(allDateKeys.length / 10) - 1
+      : allDateKeys.length > 12
+        ? 2
+        : 0;
+
+  const hasBidChanges = row.allBidChanges.length > 0;
+
+  return (
+    <div className="bid-timeline-chart">
+      {!hasBidChanges && (
+        <p className="bid-timeline-no-data">
+          No bid changes found for this target in the uploaded window —
+          performance trend only.
+        </p>
+      )}
+      <ResponsiveContainer width="100%" height={200}>
+        <ComposedChart
+          data={chartData}
+          margin={{ top: 18, right: 50, bottom: 0, left: 4 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+          <XAxis
+            dataKey="label"
+            tick={{ fontSize: 10 }}
+            interval={tickInterval}
+          />
+          <YAxis
+            yAxisId="spend"
+            orientation="left"
+            tick={{ fontSize: 10 }}
+            tickFormatter={(v) => `$${(v as number).toFixed(0)}`}
+            width={46}
+          />
+          <YAxis
+            yAxisId="acos"
+            orientation="right"
+            tick={{ fontSize: 10 }}
+            tickFormatter={(v) => `${(v as number).toFixed(0)}%`}
+            width={38}
+          />
+          <YAxis yAxisId="orders" orientation="right" hide />
+
+          {/* Target ACoS dashed horizontal reference */}
+          <ReferenceLine
+            yAxisId="acos"
+            y={targetAcos * 100}
+            stroke="#ef4444"
+            strokeDasharray="4 3"
+            label={{
+              value: "Target",
+              position: "right",
+              fill: "#ef4444",
+              fontSize: 10,
+            }}
+          />
+
+          {/* Bid change vertical event markers */}
+          {row.allBidChanges.map((h, i) => {
+            if (!h.time) return null;
+            const k = h.time.toISOString().slice(0, 10);
+            const d = dayMap.get(k);
+            if (!d) return null;
+            const isUp = (h.bidChangePct ?? 0) >= 0;
+            const pctStr =
+              h.bidChangePct != null
+                ? `${isUp ? "+" : ""}${(h.bidChangePct * 100).toFixed(0)}%`
+                : "";
+            return (
+              <ReferenceLine
+                key={i}
+                yAxisId="spend"
+                x={d.label}
+                stroke={isUp ? "#16a34a" : "#ef4444"}
+                strokeWidth={1.5}
+                strokeDasharray="4 2"
+                label={{
+                  value: `${isUp ? "↑" : "↓"}${pctStr}`,
+                  position: "top",
+                  fill: isUp ? "#16a34a" : "#ef4444",
+                  fontSize: 10,
+                }}
+              />
+            );
+          })}
+
+          <Tooltip
+            content={({ active, payload }) => {
+              if (!active || !payload?.length) return null;
+              const pt = payload[0]?.payload as {
+                dateKey: string;
+                label: string;
+                spend: number | null;
+                acos: number | null;
+                orders: number | null;
+              };
+              const bc =
+                bidChangeMap.get(pt.dateKey) ||
+                bidChangeMap.get(
+                  allDateKeys[allDateKeys.indexOf(pt.dateKey) - 1] ?? "",
+                ) ||
+                bidChangeMap.get(
+                  allDateKeys[allDateKeys.indexOf(pt.dateKey) + 1] ?? "",
+                );
+              return (
+                <div className="scatter-tooltip">
+                  <strong>{pt.label}</strong>
+                  {pt.acos != null && (
+                    <div
+                      style={{
+                        color:
+                          pt.acos > targetAcos * 100 ? "#ef4444" : "#16a34a",
+                      }}
+                    >
+                      ACoS: {pt.acos.toFixed(1)}%
+                    </div>
+                  )}
+                  {pt.spend != null && <div>Spend: {money2(pt.spend)}</div>}
+                  {pt.orders != null && <div>Orders: {pt.orders}</div>}
+                  {bc?.toBid != null && (
+                    <>
+                      <div
+                        style={{
+                          borderTop: "1px solid #e5e7eb",
+                          margin: "4px 0 2px",
+                          paddingTop: "4px",
+                          fontSize: 11,
+                          color: "#64748b",
+                        }}
+                      >
+                        ── Bid change ──
+                      </div>
+                      <div>
+                        {money2(bc.fromBid)} → {money2(bc.toBid)}
+                        {bc.bidChangePct != null && (
+                          <span
+                            style={{
+                              marginLeft: 4,
+                              color:
+                                bc.bidChangePct >= 0 ? "#16a34a" : "#ef4444",
+                              fontWeight: 600,
+                            }}
+                          >
+                            ({bc.bidChangePct >= 0 ? "+" : ""}
+                            {(bc.bidChangePct * 100).toFixed(1)}%)
+                          </span>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            }}
+          />
+
+          <Line
+            yAxisId="spend"
+            type="monotone"
+            dataKey="spend"
+            stroke="#2563eb"
+            strokeWidth={1.5}
+            dot={false}
+            connectNulls
+            name="Spend"
+          />
+          <Line
+            yAxisId="acos"
+            type="monotone"
+            dataKey="acos"
+            stroke="#ef4444"
+            strokeWidth={1.5}
+            dot={false}
+            connectNulls
+            name="ACoS %"
+          />
+          <Line
+            yAxisId="orders"
+            type="monotone"
+            dataKey="orders"
+            stroke="#16a34a"
+            strokeWidth={1.5}
+            strokeDasharray="4 2"
+            dot={false}
+            connectNulls
+            name="Orders"
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+      <div className="bid-timeline-legend">
+        <span style={{ color: "#2563eb" }}>── Spend</span>
+        <span style={{ color: "#ef4444" }}>── ACoS %</span>
+        <span style={{ color: "#16a34a" }}>╌╌ Orders</span>
+        {hasBidChanges && <span style={{ color: "#16a34a" }}>↑ Bid up</span>}
+        {hasBidChanges && <span style={{ color: "#ef4444" }}>↓ Bid down</span>}
+        <span
+          style={{
+            color: "#ef4444",
+            borderBottom: "2px dashed #ef4444",
+            paddingBottom: 1,
+          }}
+        >
+          Target ACoS
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function WhyCard({
   row,
   lookbackDays = 7,
+  targetAcos = 0.25,
 }: {
   row: AuditRow;
   lookbackDays?: number;
+  targetAcos?: number;
 }) {
   const [showMore, setShowMore] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(false);
   const bidArrow =
     row.latestBid != null && row.previousBid != null
       ? row.latestBid > row.previousBid
@@ -971,6 +1261,20 @@ function WhyCard({
           )}
         </div>
       )}
+      {row.dailyRows.length >= 3 && (
+        <div className="why-timeline-section">
+          <button
+            type="button"
+            className="why-more-btn"
+            onClick={() => setShowTimeline(!showTimeline)}
+          >
+            {showTimeline ? "Hide timeline ▴" : "Show bid timeline ▾"}
+          </button>
+          {showTimeline && (
+            <BidTimelineChart row={row} targetAcos={targetAcos} />
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -978,9 +1282,11 @@ function WhyCard({
 function MoveItem({
   row,
   lookbackDays,
+  targetAcos,
 }: {
   row: AuditRow;
   lookbackDays: number;
+  targetAcos: number;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -1011,7 +1317,13 @@ function MoveItem({
         </span>
         <span className="move-toggle">{open ? "Hide" : "Why?"}</span>
       </button>
-      {open && <WhyCard row={row} lookbackDays={lookbackDays} />}
+      {open && (
+        <WhyCard
+          row={row}
+          lookbackDays={lookbackDays}
+          targetAcos={targetAcos}
+        />
+      )}
     </div>
   );
 }
@@ -1021,11 +1333,13 @@ function MoveColumn({
   rows,
   onSeeAll,
   lookbackDays,
+  targetAcos,
 }: {
   move: Move;
   rows: AuditRow[];
   onSeeAll: () => void;
   lookbackDays: number;
+  targetAcos: number;
 }) {
   const meta = MOVE_META[move];
   const sorted = rows.slice().sort((a, b) => b.priorityScore - a.priorityScore);
@@ -1094,6 +1408,7 @@ function MoveColumn({
             key={`${row.campaign}-${row.adGroup}-${row.targeting}-${row.matchType}`}
             row={row}
             lookbackDays={lookbackDays}
+            targetAcos={targetAcos}
           />
         ))}
       </div>
@@ -1170,18 +1485,21 @@ function ActionPlan({
           rows={push}
           onSeeAll={() => onNavigate("All Targets")}
           lookbackDays={thresholds.lookbackDays}
+          targetAcos={thresholds.targetAcos}
         />
         <MoveColumn
           move="CUT"
           rows={cut}
           onSeeAll={() => onNavigate("All Targets")}
           lookbackDays={thresholds.lookbackDays}
+          targetAcos={thresholds.targetAcos}
         />
         <MoveColumn
           move="HOLD"
           rows={hold}
           onSeeAll={() => onNavigate("All Targets")}
           lookbackDays={thresholds.lookbackDays}
+          targetAcos={thresholds.targetAcos}
         />
       </div>
       <p className="plan-foot">
@@ -1243,10 +1561,12 @@ function AllTargets({
   result,
   onExport,
   lookbackDays = 7,
+  targetAcos = 0.25,
 }: {
   result: AnalysisResult;
   onExport: (kind: string) => void;
   lookbackDays?: number;
+  targetAcos?: number;
 }) {
   const [filter, setFilter] = useState("all");
   const active = ALL_FILTERS.find((f) => f.id === filter) ?? ALL_FILTERS[0];
@@ -1257,7 +1577,7 @@ function AllTargets({
         <div>
           <h2>All targets</h2>
           <p>
-            Every audited keyword/target. Filter, then click “Why?” for the
+            Every audited keyword/target. Filter, then click "Why?" for the
             exact rule and numbers.
           </p>
         </div>
@@ -1286,7 +1606,11 @@ function AllTargets({
           );
         })}
       </div>
-      <ActionTable rows={rows} lookbackDays={lookbackDays} />
+      <ActionTable
+        rows={rows}
+        lookbackDays={lookbackDays}
+        targetAcos={targetAcos}
+      />
     </section>
   );
 }
@@ -1402,10 +1726,12 @@ function ActionTable({
   rows,
   compact = false,
   lookbackDays = 7,
+  targetAcos = 0.25,
 }: {
   rows: AuditRow[];
   compact?: boolean;
   lookbackDays?: number;
+  targetAcos?: number;
 }) {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All");
@@ -1558,7 +1884,11 @@ function ActionTable({
                   {isOpen && (
                     <tr className="why-detail">
                       <td colSpan={13}>
-                        <WhyCard row={row} lookbackDays={lookbackDays} />
+                        <WhyCard
+                          row={row}
+                          lookbackDays={lookbackDays}
+                          targetAcos={targetAcos}
+                        />
                       </td>
                     </tr>
                   )}
@@ -1655,7 +1985,7 @@ function AdGroupRow({
       {expanded && agRows.length > 0 && (
         <tr className="ag-expand-row">
           <td colSpan={7} className="ag-expand-cell">
-            <ActionTable rows={agRows} compact />
+            <ActionTable rows={agRows} compact targetAcos={targetAcos} />
           </td>
         </tr>
       )}
@@ -2113,6 +2443,7 @@ function ProductsView({
                             rows={productRows}
                             compact
                             lookbackDays={thresholds.lookbackDays}
+                            targetAcos={thresholds.targetAcos}
                           />
                         </td>
                       </tr>
@@ -2131,9 +2462,11 @@ function ProductsView({
 function CampaignCard({
   c,
   auditRows,
+  targetAcos = 0.25,
 }: {
   c: CampaignSummary;
   auditRows: AuditRow[];
+  targetAcos?: number;
 }) {
   const [expanded, setExpanded] = useState(false);
   const parsed = parseCampaignName(c.campaign);
@@ -2204,7 +2537,7 @@ function CampaignCard({
               )}
             </div>
           )}
-          <ActionTable rows={campaignRows} compact />
+          <ActionTable rows={campaignRows} compact targetAcos={targetAcos} />
         </div>
       )}
     </div>
@@ -2250,7 +2583,12 @@ function CampaignView({
         </div>
         <div className="campaign-cards">
           {campaigns.map((c) => (
-            <CampaignCard key={c.campaign} c={c} auditRows={result.auditRows} />
+            <CampaignCard
+              key={c.campaign}
+              c={c}
+              auditRows={result.auditRows}
+              targetAcos={thresholds.targetAcos}
+            />
           ))}
         </div>
         {!showAll && hiddenCount > 0 && (
@@ -2522,7 +2860,7 @@ function SBView({ result }: { result: AnalysisResult }) {
         <div className="panel-header">
           <div>
             <h2>Sponsored Brands — all targets</h2>
-            <p>Click any “Why?” for the exact rule and numbers.</p>
+            <p>Click any "Why?" for the exact rule and numbers.</p>
           </div>
         </div>
         <ActionTable rows={sb.auditRows} />
@@ -2541,7 +2879,7 @@ function Methodology({ result }: { result: AnalysisResult }) {
             <h2>How decisions are made</h2>
             <p>
               Every recommendation in this tool follows the fixed rules below.
-              Nothing is a guess — show this page to anyone who asks “why?”.
+              Nothing is a guess — show this page to anyone who asks "why?".
             </p>
           </div>
         </div>
@@ -2583,7 +2921,7 @@ function Methodology({ result }: { result: AnalysisResult }) {
               </div>
               <p className="method-plain">{c.plain}</p>
               <p>
-                <strong>How it’s decided:</strong> {c.howDecided}
+                <strong>How it's decided:</strong> {c.howDecided}
               </p>
               <p>
                 <strong>Why it matters:</strong> {c.whyItMatters}

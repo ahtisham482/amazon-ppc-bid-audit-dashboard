@@ -773,6 +773,9 @@ function buildAuditRow(
   const matched = findHistoryMatch(aggregate, indexes);
   const historyRows = matched.rows;
   const latestHistory = latest(historyRows);
+  const allBidChanges = historyRows
+    .slice()
+    .sort((a, b) => (a.time?.getTime() ?? 0) - (b.time?.getTime() ?? 0));
   const currentBid = bulkBidFor(aggregate, bulk);
   const bulkConfirmed = currentBid !== null;
   const bidChanges = historyRows.length;
@@ -841,6 +844,7 @@ function buildAuditRow(
     ...aggregate,
     matchLevel: matched.level,
     latestHistory,
+    allBidChanges,
     bidChanges,
     previousBid,
     latestBid,
