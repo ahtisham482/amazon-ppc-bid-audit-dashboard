@@ -59,6 +59,9 @@ import {
   Mode,
   Priority,
   Thresholds,
+  TimelineEntry,
+  TimelineKpiVerdict,
+  UnmatchedReason,
 } from "./lib/types";
 import { parseCampaignName, matchTypeLabel } from "./lib/campaign-parser";
 import { dateShort, money, money2, number, percent } from "./lib/format";
@@ -596,6 +599,135 @@ function ThresholdPanel({
           />
         </label>
       </div>
+      <KpiSelector thresholds={thresholds} onChange={onChange} />
+    </div>
+  );
+}
+
+const KPI_OPTIONS: Array<{
+  kpi: "acos" | "cvr" | "ctr" | "roas" | "spend";
+  label: string;
+  direction: "lower" | "higher";
+  unit: "percent" | "dollars" | "ratio";
+  defaultThreshold: number;
+}> = [
+  {
+    kpi: "acos",
+    label: "ACoS",
+    direction: "lower",
+    unit: "percent",
+    defaultThreshold: 0.25,
+  },
+  {
+    kpi: "cvr",
+    label: "CVR",
+    direction: "higher",
+    unit: "percent",
+    defaultThreshold: 0.08,
+  },
+  {
+    kpi: "ctr",
+    label: "CTR",
+    direction: "higher",
+    unit: "percent",
+    defaultThreshold: 0.005,
+  },
+  {
+    kpi: "roas",
+    label: "ROAS",
+    direction: "higher",
+    unit: "ratio",
+    defaultThreshold: 4,
+  },
+  {
+    kpi: "spend",
+    label: "Spend",
+    direction: "lower",
+    unit: "dollars",
+    defaultThreshold: 50,
+  },
+];
+
+function KpiSelector({
+  thresholds,
+  onChange,
+}: {
+  thresholds: Thresholds;
+  onChange: (next: Thresholds) => void;
+}) {
+  const active = new Map((thresholds.kpis ?? []).map((k) => [k.kpi, k]));
+  const toggle = (kpi: (typeof KPI_OPTIONS)[number]) => {
+    const next = active.has(kpi.kpi)
+      ? (thresholds.kpis ?? []).filter((k) => k.kpi !== kpi.kpi)
+      : [
+          ...(thresholds.kpis ?? []),
+          {
+            kpi: kpi.kpi,
+            threshold:
+              kpi.kpi === "acos" ? thresholds.targetAcos : kpi.defaultThreshold,
+            direction: kpi.direction,
+          },
+        ];
+    onChange({ ...thresholds, kpis: next });
+  };
+  const editThreshold = (
+    opt: (typeof KPI_OPTIONS)[number],
+    inputValue: string,
+  ) => {
+    const num = Number(inputValue);
+    if (!Number.isFinite(num)) return;
+    const value = opt.unit === "percent" ? num / 100 : num;
+    const next = (thresholds.kpis ?? []).map((k) =>
+      k.kpi === opt.kpi ? { ...k, threshold: value } : k,
+    );
+    onChange({ ...thresholds, kpis: next });
+  };
+  const display = (
+    opt: (typeof KPI_OPTIONS)[number],
+    threshold: number,
+  ): number =>
+    opt.unit === "percent" ? Math.round(threshold * 1000) / 10 : threshold;
+  return (
+    <div className="kpi-selector">
+      <div className="kpi-selector-title">
+        Audit KPIs (rolling 7-day, direction only)
+      </div>
+      <div className="kpi-selector-list">
+        {KPI_OPTIONS.map((opt) => {
+          const on = active.has(opt.kpi);
+          const current = active.get(opt.kpi);
+          return (
+            <label key={opt.kpi} className={`kpi-pill${on ? " on" : ""}`}>
+              <input
+                type="checkbox"
+                checked={on}
+                onChange={() => toggle(opt)}
+              />
+              <span className="kpi-pill-label">
+                {opt.label}{" "}
+                <em>{opt.direction === "lower" ? "lower↓" : "higher↑"}</em>
+              </span>
+              {on && current && (
+                <span className="kpi-pill-threshold">
+                  ≷
+                  <input
+                    type="number"
+                    value={display(opt, current.threshold)}
+                    step={opt.unit === "ratio" ? 0.1 : 1}
+                    onChange={(e) => editThreshold(opt, e.target.value)}
+                  />
+                  {opt.unit === "percent" && <span>%</span>}
+                  {opt.unit === "dollars" && <span>$</span>}
+                </span>
+              )}
+            </label>
+          );
+        })}
+      </div>
+      <p className="kpi-selector-note">
+        Each selected KPI is evaluated independently per date on a rolling 7-day
+        window. Verdict is direction only — magnitude of bid changes is ignored.
+      </p>
     </div>
   );
 }
@@ -880,6 +1012,84 @@ function BidTimelineChart({
   row: AuditRow;
   targetAcos: number;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
+
+  // Build the full day map / bid change map once per row.
+  const built = useMemo(() => {
+    const dayMap = new Map<string, DayAgg>();
+    for (const dr of row.dailyRows) {
+      if (!dr.date) continue;
+      const k = dr.date.toISOString().slice(0, 10);
+      const ex = dayMap.get(k);
+      if (ex) {
+        ex.spend += dr.spend;
+        ex.sales += dr.sales;
+        ex.orders += dr.orders;
+      } else {
+        dayMap.set(k, {
+          spend: dr.spend,
+          sales: dr.sales,
+          orders: dr.orders,
+          label: dr.date.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            timeZone: "UTC",
+          }),
+        });
+      }
+    }
+    const bidChangeMap = new Map<string, (typeof row.allBidChanges)[0]>();
+    for (const h of row.allBidChanges) {
+      if (!h.time) continue;
+      const k = h.time.toISOString().slice(0, 10);
+      bidChangeMap.set(k, h);
+      if (!dayMap.has(k)) {
+        dayMap.set(k, {
+          spend: 0,
+          sales: 0,
+          orders: 0,
+          label: h.time.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            timeZone: "UTC",
+          }),
+        });
+      }
+    }
+    const allDateKeys = [...dayMap.keys()].sort();
+    return { dayMap, bidChangeMap, allDateKeys };
+  }, [row.dailyRows, row.allBidChanges]);
+
+  // Apply date filter to keys + chart data.
+  const filtered = useMemo(() => {
+    const { dayMap, allDateKeys } = built;
+    const inRange = (k: string) => {
+      if (fromDate && k < fromDate) return false;
+      if (toDate && k > toDate) return false;
+      return true;
+    };
+    const keys = allDateKeys.filter(inRange);
+    const chartData = keys.map((k) => {
+      const d = dayMap.get(k)!;
+      return {
+        dateKey: k,
+        label: d.label,
+        spend: d.spend > 0 ? d.spend : null,
+        acos: d.sales > 0 ? (d.spend / d.sales) * 100 : null,
+        orders: d.orders > 0 ? d.orders : null,
+      };
+    });
+    const tickInterval =
+      keys.length > 20
+        ? Math.ceil(keys.length / 10) - 1
+        : keys.length > 12
+          ? 2
+          : 0;
+    return { keys, chartData, tickInterval };
+  }, [built, fromDate, toDate]);
+
   if (row.dailyRows.length < 3) {
     return (
       <p className="bid-timeline-no-data">
@@ -889,80 +1099,38 @@ function BidTimelineChart({
     );
   }
 
-  // Aggregate daily rows by calendar date
-  const dayMap = new Map<string, DayAgg>();
-  for (const dr of row.dailyRows) {
-    if (!dr.date) continue;
-    const k = dr.date.toISOString().slice(0, 10);
-    const ex = dayMap.get(k);
-    if (ex) {
-      ex.spend += dr.spend;
-      ex.sales += dr.sales;
-      ex.orders += dr.orders;
-    } else {
-      dayMap.set(k, {
-        spend: dr.spend,
-        sales: dr.sales,
-        orders: dr.orders,
-        label: dr.date.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-          timeZone: "UTC",
-        }),
-      });
-    }
-  }
-
-  // Index bid changes by date; ensure their dates exist in dayMap
-  const bidChangeMap = new Map<string, (typeof row.allBidChanges)[0]>();
-  for (const h of row.allBidChanges) {
-    if (!h.time) continue;
-    const k = h.time.toISOString().slice(0, 10);
-    bidChangeMap.set(k, h);
-    if (!dayMap.has(k)) {
-      dayMap.set(k, {
-        spend: 0,
-        sales: 0,
-        orders: 0,
-        label: h.time.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-          timeZone: "UTC",
-        }),
-      });
-    }
-  }
-
-  const allDateKeys = [...dayMap.keys()].sort();
-  const chartData = allDateKeys.map((k) => {
-    const d = dayMap.get(k)!;
-    return {
-      dateKey: k,
-      label: d.label,
-      spend: d.spend > 0 ? d.spend : null,
-      acos: d.sales > 0 ? (d.spend / d.sales) * 100 : null,
-      orders: d.orders > 0 ? d.orders : null,
-    };
-  });
-
-  const tickInterval =
-    allDateKeys.length > 20
-      ? Math.ceil(allDateKeys.length / 10) - 1
-      : allDateKeys.length > 12
-        ? 2
-        : 0;
-
+  const { dayMap, bidChangeMap, allDateKeys } = built;
+  const { chartData, tickInterval } = filtered;
   const hasBidChanges = row.allBidChanges.length > 0;
+  const earliest = allDateKeys[0] ?? "";
+  const latest = allDateKeys[allDateKeys.length - 1] ?? "";
 
-  return (
-    <div className="bid-timeline-chart">
+  const quickRange = (days: number | null) => {
+    if (days == null) {
+      setFromDate("");
+      setToDate("");
+      return;
+    }
+    if (!latest) return;
+    const end = new Date(latest);
+    const start = new Date(end.getTime() - (days - 1) * 86_400_000);
+    setFromDate(start.toISOString().slice(0, 10));
+    setToDate(latest);
+  };
+
+  const chartHeight = expanded ? Math.round(window.innerHeight * 0.65) : 200;
+
+  const chartBody = (
+    <div
+      className={`bid-timeline-chart${expanded ? " bid-timeline-chart-expanded" : ""}`}
+    >
       {!hasBidChanges && (
         <p className="bid-timeline-no-data">
           No bid changes found for this target in the uploaded window —
           performance trend only.
         </p>
       )}
-      <ResponsiveContainer width="100%" height={200}>
+      <ResponsiveContainer width="100%" height={chartHeight}>
         <ComposedChart
           data={chartData}
           margin={{ top: 18, right: 50, bottom: 0, left: 4 }}
@@ -1003,10 +1171,12 @@ function BidTimelineChart({
             }}
           />
 
-          {/* Bid change vertical event markers */}
+          {/* Bid change vertical event markers — only within the visible range */}
           {row.allBidChanges.map((h, i) => {
             if (!h.time) return null;
             const k = h.time.toISOString().slice(0, 10);
+            if (fromDate && k < fromDate) return null;
+            if (toDate && k > toDate) return null;
             const d = dayMap.get(k);
             if (!d) return null;
             const isUp = (h.bidChangePct ?? 0) >= 0;
@@ -1152,6 +1322,195 @@ function BidTimelineChart({
       </div>
     </div>
   );
+
+  const toolbar = (
+    <div className="bid-timeline-toolbar">
+      <div className="bid-timeline-toolbar-left">
+        <label>
+          From
+          <input
+            type="date"
+            value={fromDate}
+            min={earliest}
+            max={latest}
+            onChange={(e) => setFromDate(e.target.value)}
+          />
+        </label>
+        <label>
+          To
+          <input
+            type="date"
+            value={toDate}
+            min={earliest}
+            max={latest}
+            onChange={(e) => setToDate(e.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          className="bid-timeline-range-pill"
+          onClick={() => quickRange(7)}
+        >
+          Last 7 days
+        </button>
+        <button
+          type="button"
+          className="bid-timeline-range-pill"
+          onClick={() => quickRange(30)}
+        >
+          Last 30 days
+        </button>
+        <button
+          type="button"
+          className="bid-timeline-range-pill"
+          onClick={() => quickRange(null)}
+        >
+          All
+        </button>
+      </div>
+      <button
+        type="button"
+        className="bid-timeline-expand-btn"
+        onClick={() => setExpanded(!expanded)}
+        aria-label={expanded ? "Close expanded chart" : "Expand chart"}
+      >
+        {expanded ? "✕ Close" : "⛶ Expand"}
+      </button>
+    </div>
+  );
+
+  if (expanded) {
+    return (
+      <div
+        className="bid-timeline-modal-backdrop"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) setExpanded(false);
+        }}
+      >
+        <div className="bid-timeline-modal">
+          <div className="bid-timeline-modal-header">
+            <strong>{row.targeting}</strong>
+            <span className="bid-timeline-modal-sub">{row.campaign}</span>
+          </div>
+          {toolbar}
+          {chartBody}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {toolbar}
+      {chartBody}
+    </>
+  );
+}
+
+const KPI_LABEL: Record<TimelineKpiVerdict["kpi"], string> = {
+  acos: "ACoS",
+  cvr: "CVR",
+  ctr: "CTR",
+  roas: "ROAS",
+  spend: "Spend",
+};
+
+function formatKpiValue(
+  kpi: TimelineKpiVerdict["kpi"],
+  value: number | null,
+): string {
+  if (value == null) return "—";
+  if (kpi === "spend") return money2(value);
+  if (kpi === "roas") return value.toFixed(2);
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function verdictLabel(v: TimelineKpiVerdict["verdict"]): {
+  text: string;
+  cls: string;
+  icon: string;
+} {
+  switch (v) {
+    case "acted_correctly":
+      return { text: "Acted correctly", cls: "good", icon: "✓" };
+    case "wrong_direction":
+      return { text: "Wrong direction", cls: "bad", icon: "✗" };
+    case "not_reduced":
+      return { text: "Not reduced", cls: "bad", icon: "✗" };
+    case "not_increased":
+      return { text: "Not increased", cls: "bad", icon: "✗" };
+    case "no_data":
+      return { text: "No data", cls: "mute", icon: "·" };
+  }
+}
+
+function TimelineSection({ timeline }: { timeline: TimelineEntry[] }) {
+  const [showAll, setShowAll] = useState(false);
+  if (timeline.length === 0) return null;
+  // Newest first
+  const sorted = [...timeline].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const visible = showAll ? sorted : sorted.slice(0, 3);
+  const fmtDate = (iso: string) => {
+    const [y, m, d] = iso.split("-");
+    if (!y || !m || !d) return iso;
+    const dt = new Date(Date.UTC(+y, +m - 1, +d));
+    return dt.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    });
+  };
+  return (
+    <div className="why-timeline">
+      <div className="why-timeline-head">
+        <span className="why-lbl">TIMELINE</span>
+        <span className="why-timeline-sub">Rolling 7-day verdict per date</span>
+      </div>
+      <div className="why-timeline-list">
+        {visible.map((entry) => (
+          <div key={entry.date} className="why-timeline-row">
+            <span className="why-timeline-date">{fmtDate(entry.date)}</span>
+            <div className="why-timeline-kpis">
+              {entry.perKpi.map((kv) => {
+                const v = verdictLabel(kv.verdict);
+                const cmp =
+                  kv.worseThanThreshold == null
+                    ? ""
+                    : kv.worseThanThreshold
+                      ? ` (worse than ${formatKpiValue(kv.kpi, kv.threshold)})`
+                      : ` (better than ${formatKpiValue(kv.kpi, kv.threshold)})`;
+                const bidNote =
+                  kv.bidDirection === null
+                    ? "no bid change"
+                    : `bid ${kv.bidDirection}`;
+                return (
+                  <span key={kv.kpi} className={`why-timeline-kpi ${v.cls}`}>
+                    <strong>
+                      {KPI_LABEL[kv.kpi]}{" "}
+                      {formatKpiValue(kv.kpi, kv.rolling7Value)}
+                    </strong>
+                    {cmp} · {bidNote} →{" "}
+                    <em>
+                      {v.icon} {v.text}
+                    </em>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+      {sorted.length > 3 && (
+        <button
+          type="button"
+          className="why-more-btn"
+          onClick={() => setShowAll(!showAll)}
+        >
+          {showAll ? "▲ show recent only" : `▼ show all ${sorted.length} dates`}
+        </button>
+      )}
+    </div>
+  );
 }
 
 function WhyCard({
@@ -1181,7 +1540,7 @@ function WhyCard({
       </div>
       <div className="why-row">
         <span className="why-lbl">NUMBERS</span>
-        <span className="why-pills">
+        <div className="why-pills">
           {row.acos != null && (
             <span className="why-pill">ACoS {percent(row.acos)}</span>
           )}
@@ -1200,12 +1559,12 @@ function WhyCard({
           {row.cvr != null && (
             <span className="why-pill">CVR {percent(row.cvr)}</span>
           )}
-        </span>
+        </div>
       </div>
       {(row.previousBid != null || row.latestBid != null) && (
         <div className="why-row">
           <span className="why-lbl">BID MOVE</span>
-          <span className="why-bid">
+          <div className="why-bid">
             {row.previousBid != null && <span>{money2(row.previousBid)}</span>}
             {bidArrow && <span className="why-bid-arr">{bidArrow}</span>}
             {row.latestBid != null && <span>{money2(row.latestBid)}</span>}
@@ -1222,7 +1581,62 @@ function WhyCard({
                 {row.bidChanges} change{row.bidChanges !== 1 ? "s" : ""}
               </span>
             )}
-          </span>
+          </div>
+        </div>
+      )}
+      {row.impact.status !== "No bid change" && (
+        <div className="why-row">
+          <span className="why-lbl">IMPACT</span>
+          <div className="why-impact">
+            <span className="why-impact-block">
+              <span className="why-impact-val">
+                {row.impact.preAcos != null ? percent(row.impact.preAcos) : "—"}
+              </span>
+              <span className="why-impact-sub">
+                ACoS · {row.impact.preDays}d before
+              </span>
+            </span>
+            <span className="why-impact-arr">→</span>
+            <span className="why-impact-block">
+              <span className="why-impact-val">
+                {row.impact.postAcos != null
+                  ? percent(row.impact.postAcos)
+                  : "—"}
+              </span>
+              <span className="why-impact-sub">
+                ACoS · {row.impact.postDays}d after
+              </span>
+            </span>
+            <span className="why-impact-block">
+              <span className="why-impact-val">
+                {money2(row.impact.preSales)}
+              </span>
+              <span className="why-impact-sub">sales before</span>
+            </span>
+            <span className="why-impact-arr">→</span>
+            <span className="why-impact-block">
+              <span className="why-impact-val">
+                {money2(row.impact.postSales)}
+              </span>
+              <span className="why-impact-sub">
+                sales after
+                {row.impact.status === "Incomplete window" ? " *" : ""}
+              </span>
+            </span>
+            <span
+              className={`why-impact-badge ${
+                row.impact.label === "Helped"
+                  ? "helped"
+                  : row.impact.label === "Hurt"
+                    ? "hurt"
+                    : row.impact.label === "Inconclusive"
+                      ? "inconclusive"
+                      : "nodata"
+              }`}
+            >
+              {row.impact.label}
+            </span>
+          </div>
         </div>
       )}
       <div className="why-row">
@@ -1231,6 +1645,7 @@ function WhyCard({
           {buildDoThis(row, lookbackDays)}
         </strong>
       </div>
+      {row.timeline.length > 0 && <TimelineSection timeline={row.timeline} />}
       <button
         type="button"
         className="why-more-btn"
@@ -1242,8 +1657,8 @@ function WhyCard({
         <div className="why-detail-extra">
           {row.category === "Too Many Bid Changes" && (
             <p className="why-threshold-note">
-              <strong>Threshold:</strong> more than 3 bid changes in a{" "}
-              {lookbackDays}-day window triggers this flag.
+              <strong>Rule:</strong> flagged when 2 or more bid changes happen
+              on the same calendar day.
             </p>
           )}
           <p>
@@ -1256,7 +1671,14 @@ function WhyCard({
           )}
           {row.explain.whyConfidence && (
             <p>
-              <strong>Confidence:</strong> {windowExplain(row, lookbackDays)}
+              <strong>Confidence:</strong> {row.explain.whyConfidence}
+            </p>
+          )}
+          {row.impact.status === "Incomplete window" && (
+            <p className="why-threshold-note">
+              * Before/after window is incomplete — the post-change period has
+              fewer days than the pre-change period. Check back when more data
+              has collected.
             </p>
           )}
         </div>
@@ -1524,9 +1946,6 @@ const ALL_FILTERS: Array<{
   test: (r: AuditRow) => boolean;
 }> = [
   { id: "all", label: "All", test: () => true },
-  { id: "push", label: "Push", test: (r) => moveOf(r) === "PUSH" },
-  { id: "cut", label: "Cut", test: (r) => moveOf(r) === "CUT" },
-  { id: "hold", label: "Hold", test: (r) => moveOf(r) === "HOLD" },
   {
     id: "winners",
     label: "Winners not scaled",
@@ -1548,6 +1967,7 @@ const ALL_FILTERS: Array<{
       r.category === "Profitable Terms Reduced" ||
       r.category === "Unprofitable Terms Increased",
   },
+  { id: "hold", label: "Hold", test: (r) => moveOf(r) === "HOLD" },
   {
     id: "over",
     label: "Over-managed",
@@ -2652,6 +3072,63 @@ function CampaignView({
   );
 }
 
+const UNMATCHED_REASON_LABELS: Record<
+  UnmatchedReason,
+  { label: string; detail: string }
+> = {
+  no_bid_change_in_window: {
+    label: "No bid change in window",
+    detail:
+      "Campaign is in the history file, but this specific target had no bid change during the uploaded date range. Upload a wider history window or a Bulk file.",
+  },
+  name_mismatch: {
+    label: "Campaign name not in history",
+    detail:
+      "This campaign does not appear in the history file at all. Check for renames, spaces, or structure differences between the two files.",
+  },
+  target_not_in_bulk: {
+    label: "Not in Bulk file",
+    detail: "Target was not found in the uploaded Bulk Operations file.",
+  },
+};
+
+function UnmatchedBreakdown({ rows }: { rows: AuditRow[] }) {
+  if (rows.length === 0) return null;
+  const counts: Record<string, number> = {};
+  for (const row of rows) {
+    const key = row.unmatchedReason ?? "unknown";
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  const entries = (Object.keys(counts) as UnmatchedReason[]).sort(
+    (a, b) => counts[b] - counts[a],
+  );
+  return (
+    <div className="unmatched-breakdown">
+      <p className="unmatched-breakdown-title">Why are they unmatched?</p>
+      {entries.map((reason) => {
+        const meta = UNMATCHED_REASON_LABELS[reason] ?? {
+          label: reason,
+          detail: "",
+        };
+        return (
+          <div key={reason} className="unmatched-breakdown-row">
+            <span className="unmatched-breakdown-count">{counts[reason]}</span>
+            <div>
+              <span className="unmatched-breakdown-label">{meta.label}</span>
+              {meta.detail && (
+                <span className="unmatched-breakdown-detail">
+                  {" "}
+                  — {meta.detail}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function DataQuality({
   result,
   onExport,
@@ -2710,6 +3187,7 @@ function DataQuality({
             sub="Visible for review"
           />
         </div>
+        <UnmatchedBreakdown rows={result.unmatchedPerformanceRows} />
         <div className="warning-stack">
           {result.warnings.map((warning) => (
             <div className="insight warning" key={warning}>

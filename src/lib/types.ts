@@ -1,5 +1,10 @@
 export type Mode = "Conservative" | "Balanced" | "Aggressive";
 
+export type UnmatchedReason =
+  | "no_bid_change_in_window"
+  | "name_mismatch"
+  | "target_not_in_bulk";
+
 export type MatchLevel =
   | "High exact"
   | "High canonical"
@@ -36,6 +41,8 @@ export interface Thresholds {
   lookbackDays: number;
   attributionDelayDays: number;
   mode: Mode;
+  /** Active KPI thresholds for the rolling-7 timeline audit. */
+  kpis: KpiThreshold[];
 }
 
 export interface FileStatus {
@@ -153,11 +160,54 @@ export interface RowExplain {
   whyConfidence: string;
 }
 
+/** KPI we audit against. Each carries its own direction semantic. */
+export type KpiKey = "acos" | "cvr" | "ctr" | "roas" | "spend";
+
+/** Per-KPI threshold + direction. */
+export interface KpiThreshold {
+  kpi: KpiKey;
+  /** Threshold value in same units the row stores (0.25 = 25% for ACoS/CVR/CTR; raw $ for spend; raw ratio for ROAS). */
+  threshold: number;
+  /** "lower" = lower is better (ACoS, Spend). "higher" = higher is better (CVR, CTR, ROAS). */
+  direction: "lower" | "higher";
+}
+
+/** Per-date verdict produced by the rolling 7-day timeline engine. */
+export interface TimelineEntry {
+  /** Calendar date ISO yyyy-mm-dd. */
+  date: string;
+  /** Per-KPI verdicts for this date. */
+  perKpi: TimelineKpiVerdict[];
+}
+
+export interface TimelineKpiVerdict {
+  kpi: KpiKey;
+  /** Rolling 7-day KPI value as of `date`. */
+  rolling7Value: number | null;
+  /** Threshold used. */
+  threshold: number;
+  /** Is the rolling value worse than threshold? (lower-is-better: value > threshold; higher-is-better: value < threshold) */
+  worseThanThreshold: boolean | null;
+  /** Direction of any bid change in the rolling window. null = no change. */
+  bidDirection: "increased" | "reduced" | null;
+  /** Final verdict for this KPI on this date. */
+  verdict:
+    | "acted_correctly"
+    | "wrong_direction"
+    | "not_reduced"
+    | "not_increased"
+    | "no_data";
+}
+
 export interface AuditRow extends PerformanceAggregate {
   matchLevel: MatchLevel;
+  /** Why this target is Unmatched; null when matched. */
+  unmatchedReason: UnmatchedReason | null;
   latestHistory: HistoryRow | null;
   /** All bid changes for this target, sorted oldest → newest. */
   allBidChanges: HistoryRow[];
+  /** Per-date rolling-7 verdicts (empty if not enough data). */
+  timeline: TimelineEntry[];
   bidChanges: number;
   previousBid: number | null;
   latestBid: number | null;

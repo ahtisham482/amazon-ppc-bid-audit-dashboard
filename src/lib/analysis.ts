@@ -8,6 +8,8 @@ import {
   Category,
   FileStatus,
   HistoryRow,
+  KpiKey,
+  KpiThreshold,
   MatchLevel,
   Methodology,
   MethodologyEntry,
@@ -16,7 +18,10 @@ import {
   Recommendation,
   RowExplain,
   TargetingRow,
+  TimelineEntry,
+  TimelineKpiVerdict,
   Thresholds,
+  UnmatchedReason,
 } from "./types";
 
 type RawRow = Record<string, unknown>;
@@ -37,6 +42,7 @@ export const defaultThresholds: Thresholds = {
   lookbackDays: 7,
   attributionDelayDays: 1,
   mode: "Balanced",
+  kpis: [{ kpi: "acos", threshold: 0.25, direction: "lower" }],
 };
 
 export function thresholdsForMode(
@@ -402,11 +408,19 @@ function effectiveThresholds(
   acosMap: Map<string, number> | undefined,
   campaign: string,
 ): Thresholds {
-  if (!acosMap || !acosMap.size) return thresholds;
-  const override = acosMap.get(norm(campaign));
-  return override === undefined
-    ? thresholds
-    : { ...thresholds, targetAcos: override };
+  const override =
+    acosMap && acosMap.size ? acosMap.get(norm(campaign)) : undefined;
+  const targetAcos = override !== undefined ? override : thresholds.targetAcos;
+  // Always sync the ACoS KPI threshold to the current targetAcos so the
+  // rolling-7 timeline uses the right number when targetAcos changes.
+  const baseKpis = thresholds.kpis ?? [];
+  const hasAcos = baseKpis.some((k) => k.kpi === "acos");
+  const kpis: KpiThreshold[] = hasAcos
+    ? baseKpis.map((k) =>
+        k.kpi === "acos" ? { ...k, threshold: targetAcos } : k,
+      )
+    : [{ kpi: "acos", threshold: targetAcos, direction: "lower" }, ...baseKpis];
+  return { ...thresholds, targetAcos, kpis };
 }
 
 /** Builds a self-contained audit for one program (used for Sponsored Brands). */
@@ -421,12 +435,14 @@ function runProgramAudit(
 ): import("./types").ProgramResult {
   const aggregates = aggregateTargeting(targeting);
   const indexes = buildHistoryIndexes(programHistory);
+  const programCampaigns = new Set(programHistory.map((h) => h.campaignName));
   const auditRows = aggregates.map((aggregate) =>
     buildAuditRow(
       aggregate,
       indexes,
       effectiveThresholds(thresholds, acosMap, aggregate.campaign),
       bulk,
+      programCampaigns,
     ),
   );
   return {
@@ -470,12 +486,14 @@ export function analyzeFiles(
   const spBulk = opts.bulkTargets
     ? buildBulkIndex(opts.bulkTargets, "SP")
     : null;
+  const spCampaigns = new Set(spHistory.map((h) => h.campaignName));
   const auditRows = aggregates.map((aggregate) =>
     buildAuditRow(
       aggregate,
       historyIndexes,
       effectiveThresholds(thresholds, opts.acosMap, aggregate.campaign),
       spBulk,
+      spCampaigns,
     ),
   );
   const unmatchedHistoryRows = getUnmatchedHistoryRows(spHistory, auditRows);
@@ -764,14 +782,167 @@ function buildHistoryIndexes(rows: HistoryRow[]): HistoryIndexes {
   };
 }
 
+/**
+ * Rolling 7-day-per-date verdict timeline.
+ * For every calendar date present in `dailyRows`, computes the rolling-7 KPI value,
+ * checks whether a bid change happened in that window, and produces a per-KPI verdict.
+ * Direction-only — magnitude of the bid change is ignored.
+ */
+function buildTimeline(
+  dailyRows: TargetingRow[],
+  allBidChanges: HistoryRow[],
+  kpis: KpiThreshold[],
+): TimelineEntry[] {
+  if (kpis.length === 0) return [];
+  const byDate = new Map<
+    string,
+    {
+      spend: number;
+      sales: number;
+      clicks: number;
+      orders: number;
+      impressions: number;
+    }
+  >();
+  for (const dr of dailyRows) {
+    if (!dr.date) continue;
+    const key = dr.date.toISOString().slice(0, 10);
+    const ex = byDate.get(key);
+    if (ex) {
+      ex.spend += dr.spend;
+      ex.sales += dr.sales;
+      ex.clicks += dr.clicks;
+      ex.orders += dr.orders;
+      ex.impressions += dr.impressions;
+    } else {
+      byDate.set(key, {
+        spend: dr.spend,
+        sales: dr.sales,
+        clicks: dr.clicks,
+        orders: dr.orders,
+        impressions: dr.impressions,
+      });
+    }
+  }
+  const dates = [...byDate.keys()].sort();
+  if (dates.length === 0) return [];
+
+  const out: TimelineEntry[] = [];
+  for (let i = 0; i < dates.length; i++) {
+    const dateKey = dates[i];
+    const windowStartIdx = Math.max(0, i - 6);
+    const windowDates = dates.slice(windowStartIdx, i + 1);
+    // Require a complete 7-day window when enough data exists, otherwise use all
+    if (windowDates.length < 7 && dates.length >= 7) continue;
+
+    let spend = 0,
+      sales = 0,
+      clicks = 0,
+      orders = 0,
+      impressions = 0;
+    for (const wd of windowDates) {
+      const d = byDate.get(wd)!;
+      spend += d.spend;
+      sales += d.sales;
+      clicks += d.clicks;
+      orders += d.orders;
+      impressions += d.impressions;
+    }
+
+    const startDate = windowDates[0];
+    const endDate = dateKey;
+
+    const windowBidChanges = allBidChanges.filter((h) => {
+      if (!h.time) return false;
+      const k = h.time.toISOString().slice(0, 10);
+      return k >= startDate && k <= endDate;
+    });
+
+    let bidDirection: "increased" | "reduced" | null = null;
+    if (windowBidChanges.length > 0) {
+      const last = windowBidChanges[windowBidChanges.length - 1];
+      if (last.bidChangePct != null) {
+        if (last.bidChangePct > 0) bidDirection = "increased";
+        else if (last.bidChangePct < 0) bidDirection = "reduced";
+      }
+    }
+
+    const perKpi: TimelineKpiVerdict[] = kpis.map((kt) => {
+      let value: number | null;
+      switch (kt.kpi) {
+        case "acos":
+          value = sales > 0 ? spend / sales : null;
+          break;
+        case "cvr":
+          value = clicks > 0 ? orders / clicks : null;
+          break;
+        case "ctr":
+          value = impressions > 0 ? clicks / impressions : null;
+          break;
+        case "roas":
+          value = spend > 0 ? sales / spend : null;
+          break;
+        case "spend":
+          value = spend;
+          break;
+        default:
+          value = null;
+      }
+
+      let worseThanThreshold: boolean | null = null;
+      if (value != null) {
+        worseThanThreshold =
+          kt.direction === "lower"
+            ? value > kt.threshold
+            : value < kt.threshold;
+      }
+
+      let verdict: TimelineKpiVerdict["verdict"];
+      if (worseThanThreshold == null) {
+        verdict = "no_data";
+      } else if (worseThanThreshold) {
+        // Want bid reduced
+        if (bidDirection === null) verdict = "not_reduced";
+        else if (bidDirection === "reduced") verdict = "acted_correctly";
+        else verdict = "wrong_direction";
+      } else {
+        // Want bid increased
+        if (bidDirection === null) verdict = "not_increased";
+        else if (bidDirection === "increased") verdict = "acted_correctly";
+        else verdict = "wrong_direction";
+      }
+
+      return {
+        kpi: kt.kpi,
+        rolling7Value: value,
+        threshold: kt.threshold,
+        worseThanThreshold,
+        bidDirection,
+        verdict,
+      };
+    });
+
+    out.push({ date: dateKey, perKpi });
+  }
+
+  return out;
+}
+
 function buildAuditRow(
   aggregate: PerformanceAggregate,
   indexes: HistoryIndexes,
   thresholds: Thresholds,
   bulk: BulkIndex | null = null,
+  campaignsWithHistory: Set<string> = new Set(),
 ): AuditRow {
   const matched = findHistoryMatch(aggregate, indexes);
   const historyRows = matched.rows;
+  const unmatchedReason: UnmatchedReason | null =
+    matched.level !== "Unmatched"
+      ? null
+      : campaignsWithHistory.has(aggregate.campaign)
+        ? "no_bid_change_in_window"
+        : "name_mismatch";
   const latestHistory = latest(historyRows);
   const allBidChanges = historyRows
     .slice()
@@ -783,12 +954,24 @@ function buildAuditRow(
   const latestBid = latestHistory?.toBid ?? null;
   const bidChangePct = latestHistory?.bidChangePct ?? null;
   const lastBidChangeDate = latestHistory?.time ?? null;
-  const lastIncrease = bidChangePct !== null && bidChangePct > 0.05;
-  const lastDecrease = bidChangePct !== null && bidChangePct < -0.05;
+  // Direction-only — magnitude of the bid change is irrelevant per simplified spec.
+  const lastIncrease = bidChangePct !== null && bidChangePct > 0;
+  const lastDecrease = bidChangePct !== null && bidChangePct < 0;
   const profitable = isProfitable(aggregate, thresholds);
   const wasteful = isWasteful(aggregate, thresholds);
   const enoughData = hasEnoughData(aggregate, thresholds);
-  const tooManyBidChanges = bidChanges >= 3;
+  // Over-managed: more than 1 bid change on any single calendar day. That's it.
+  const tooManyBidChanges = (() => {
+    if (allBidChanges.length < 2) return false;
+    const byDay = new Map<string, number>();
+    for (const h of allBidChanges) {
+      if (!h.time) continue;
+      const day = h.time.toISOString().slice(0, 10);
+      byDay.set(day, (byDay.get(day) ?? 0) + 1);
+      if ((byDay.get(day) ?? 0) > 1) return true;
+    }
+    return false;
+  })();
   const impact = calculateBeforeAfter(aggregate, latestHistory, thresholds);
   const secondaryTags: Category[] = [];
 
@@ -840,11 +1023,19 @@ function buildAuditRow(
         }
       : explain;
 
+  const timeline = buildTimeline(
+    aggregate.dailyRows,
+    allBidChanges,
+    thresholds.kpis ?? [],
+  );
+
   return {
     ...aggregate,
     matchLevel: matched.level,
+    unmatchedReason,
     latestHistory,
     allBidChanges,
+    timeline,
     bidChanges,
     previousBid,
     latestBid,
@@ -1042,14 +1233,13 @@ function pctText(n: number | null | undefined) {
 /** Plain-language guide for every category, with the user's thresholds filled in. */
 function categoryGuide(t: Thresholds): Record<Category, MethodologyEntry> {
   const tA = `${Math.round(t.targetAcos * 100)}%`;
-  const wasteA = `${Math.round(t.targetAcos * 150)}%`;
   return {
     "Winners Not Scaled": {
       category: "Winners Not Scaled",
       title: "Winners not scaled",
       plain:
-        "A profitable target you are not pushing — the bid was not meaningfully raised.",
-      howDecided: `Profitable (ACoS ≤ target ${tA}, sales ≥ ${money(t.minSales)}, orders ≥ ${t.minOrders}) AND the most recent bid change was not a meaningful increase (more than +5%).`,
+        "A profitable target you are not pushing — the bid was not raised.",
+      howDecided: `Profitable (ACoS ≤ target ${tA}, sales ≥ ${money(t.minSales)}, orders ≥ ${t.minOrders}) AND the most recent bid change was not an increase. Direction only — magnitude is ignored.`,
       whyItMatters:
         "These already make money. Not bidding them up leaves easy sales on the table.",
       action: "Raise the bid in small steps and watch ACoS.",
@@ -1058,7 +1248,7 @@ function categoryGuide(t: Thresholds): Record<Category, MethodologyEntry> {
       category: "Losers Not Reduced",
       title: "Waste not reduced",
       plain: "A money-losing target that was not cut — spend keeps leaking.",
-      howDecided: `Wasteful (spend ≥ ${money(t.minSpend)} with 0 orders, OR spend ≥ ${money(t.minSpend)} and ACoS ≥ ${wasteA} = 1.5× target) AND the most recent bid change was not a meaningful decrease (less than −5%).`,
+      howDecided: `Wasteful (spend ≥ ${money(t.minSpend)} with 0 orders, OR spend ≥ ${money(t.minSpend)} and ACoS > target ${tA}) AND the most recent bid change was not a decrease. Direction only — magnitude is ignored.`,
       whyItMatters: "This is spend with little or no return — pure leakage.",
       action: "Lower the bid (or pause/review if there are zero orders).",
     },
@@ -1066,7 +1256,7 @@ function categoryGuide(t: Thresholds): Record<Category, MethodologyEntry> {
       category: "Profitable Terms Reduced",
       title: "Profitable target was cut",
       plain: "A target that was making money but the bid was reduced anyway.",
-      howDecided: `Profitable by the rule above, BUT the most recent bid change was a meaningful decrease (less than −5%).`,
+      howDecided: `Profitable by the rule above, BUT the most recent bid change was a decrease (any %).`,
       whyItMatters: "Cutting a winner usually loses sales for no good reason.",
       action: "Review the cut — likely raise the bid back up.",
     },
@@ -1074,7 +1264,7 @@ function categoryGuide(t: Thresholds): Record<Category, MethodologyEntry> {
       category: "Unprofitable Terms Increased",
       title: "Money-loser was bid up",
       plain: "A target that was losing money but the bid was increased anyway.",
-      howDecided: `Wasteful by the rule above, BUT the most recent bid change was a meaningful increase (more than +5%).`,
+      howDecided: `Wasteful by the rule above, BUT the most recent bid change was an increase (any %).`,
       whyItMatters: "Bidding up a loser accelerates wasted spend.",
       action: "Reduce the bid (or pause/review).",
     },
@@ -1093,7 +1283,7 @@ function categoryGuide(t: Thresholds): Record<Category, MethodologyEntry> {
       title: "Changed too often",
       plain:
         "The bid on this target was changed so often that no change had time to prove itself.",
-      howDecided: `3 or more bid changes on this target inside the uploaded window.`,
+      howDecided: `More than 1 bid change happened on the same calendar day.`,
       whyItMatters:
         "Constant tweaking stops Amazon learning and makes results impossible to read.",
       action:
@@ -1195,7 +1385,7 @@ function buildExplain(input: ExplainInput): RowExplain {
     "Profitable Terms Reduced": `${label} was profitable (${money(row.sales)} sales, ${acos} ACoS) yet the bid was reduced (${move}). That likely loses sales for no reason.`,
     "Unprofitable Terms Increased": `${label} is losing money (${acos} ACoS, ${money(row.spend)} spend) yet the bid was increased (${move}). That speeds up the waste.`,
     "No Action Despite Enough Data": `${label} had enough activity (${row.clicks} clicks, ${money(row.spend)} spend) but we could not find its bid-change history in the uploaded file — so we can't say if the bid was right.`,
-    "Too Many Bid Changes": `${label} had ${input.bidChanges} bid changes inside the window. That is too often — no change had time to prove itself, so the data is noisy.`,
+    "Too Many Bid Changes": `${label} had more than 1 bid change on the same calendar day. No change had time to prove itself, so the data is noisy.`,
     "Needs More Data": `${label} only has ${row.clicks} clicks and ${money(row.spend)} spend — not enough to safely change the bid yet.`,
     "Correctly Managed": `${label} was handled correctly: the ${move} matched its performance (${acos} ACoS).`,
     Monitor: `${label} is stable — not a clear winner or loser at the moment (${acos} ACoS, ${money(row.spend)} spend). Nothing urgent.`,
@@ -1594,11 +1784,12 @@ function isProfitable(row: PerformanceAggregate, thresholds: Thresholds) {
 }
 
 function isWasteful(row: PerformanceAggregate, thresholds: Thresholds) {
+  // Direct threshold compare — no 1.5x multiplier per simplified spec.
   return (
     (row.spend >= thresholds.minSpend && row.orders === 0) ||
     (row.spend >= thresholds.minSpend &&
       row.acos !== null &&
-      row.acos >= thresholds.targetAcos * 1.5)
+      row.acos > thresholds.targetAcos)
   );
 }
 

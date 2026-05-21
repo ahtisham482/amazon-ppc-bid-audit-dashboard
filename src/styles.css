@@ -1699,9 +1699,13 @@ tr.why-detail td {
   text-transform: uppercase;
 }
 .why-pills {
-  display: flex;
-  flex-wrap: wrap;
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: wrap !important;
+  align-items: center;
   gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .why-pill {
   background: var(--surface-3, #e5e7eb);
@@ -1711,8 +1715,11 @@ tr.why-detail td {
   color: var(--ink);
 }
 .why-bid {
-  display: flex;
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
   align-items: center;
+  overflow: hidden;
   gap: 6px;
   font-family: ui-monospace, monospace;
   font-size: 12px;
@@ -1798,6 +1805,103 @@ tr.why-detail td {
   padding: 4px 0 2px 8px;
 }
 
+.bid-timeline-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 11.5px;
+}
+.bid-timeline-toolbar-left {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.bid-timeline-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.bid-timeline-toolbar input[type="date"] {
+  font-size: 11.5px;
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+}
+.bid-timeline-range-pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+.bid-timeline-range-pill:hover {
+  background: var(--surface-2);
+}
+.bid-timeline-expand-btn {
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--teal);
+  font-weight: 600;
+  cursor: pointer;
+}
+.bid-timeline-expand-btn:hover {
+  background: var(--surface-2);
+}
+
+.bid-timeline-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.bid-timeline-modal {
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 16px 20px;
+  width: 90vw;
+  max-width: 1400px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bid-timeline-modal-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+.bid-timeline-modal-header strong {
+  font-size: 15px;
+  color: var(--ink);
+}
+.bid-timeline-modal-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+.bid-timeline-chart-expanded {
+  flex: 1;
+}
+
 @media (max-width: 760px) {
   .bid-timeline-chart {
     display: none;
@@ -1815,25 +1919,17 @@ tr.why-detail td .why-card {
   padding: 8px 0;
 }
 
-/* Fix 2: prevent BID MOVE line from wrapping */
-.why-bid {
-  flex-wrap: nowrap;
-  overflow: hidden;
-}
-
-/* Fix 2: let content spans in .why-row fill remaining space without overflow */
-.why-row > span:last-child,
-.why-row > .why-do-this {
-  flex: 1;
+/* let content elements in .why-row fill remaining space without overflow */
+.why-row > span:not(.why-lbl):last-child,
+.why-row > .why-do-this,
+.why-row > .why-pills,
+.why-row > .why-bid,
+.why-row > .why-impact {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
-.why-pills {
-  flex: 1;
-  min-width: 0;
-}
-
-/* Fix 2: threshold note highlight (shown above Rule text for Too Many Bid Changes) */
+/* threshold note highlight (shown above Rule text for Too Many Bid Changes) */
 .why-threshold-note {
   font-size: 11.5px;
   color: #374151;
@@ -1842,6 +1938,231 @@ tr.why-detail td .why-card {
   padding: 4px 8px;
   border-radius: 0 4px 4px 0;
   margin: 2px 0;
+}
+
+/* ── Unmatched reason breakdown (Data Quality tab) ───────────── */
+.unmatched-breakdown {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.unmatched-breakdown-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 2px;
+}
+.unmatched-breakdown-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.unmatched-breakdown-count {
+  flex-shrink: 0;
+  min-width: 28px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.unmatched-breakdown-label {
+  font-weight: 600;
+  color: var(--ink);
+}
+.unmatched-breakdown-detail {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ── KPI selector (audit thresholds) ──────────────────────────── */
+.kpi-selector {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.kpi-selector-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.kpi-selector-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.kpi-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  font-size: 12px;
+  cursor: pointer;
+}
+.kpi-pill.on {
+  background: var(--surface-2);
+  border-color: var(--teal);
+}
+.kpi-pill input[type="checkbox"] {
+  margin: 0;
+}
+.kpi-pill-label em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 10px;
+  margin-left: 3px;
+}
+.kpi-pill-threshold {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.kpi-pill-threshold input {
+  width: 52px;
+  font-size: 12px;
+  padding: 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--surface);
+}
+.kpi-selector-note {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 0;
+  font-style: italic;
+}
+
+/* ── WhyCard Timeline (per-date rolling-7 verdicts) ───────────── */
+.why-timeline {
+  border-top: 1px dashed var(--line);
+  padding-top: 6px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.why-timeline-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.why-timeline-sub {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+.why-timeline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.why-timeline-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.why-timeline-date {
+  flex-shrink: 0;
+  width: 60px;
+  font-weight: 700;
+  color: var(--ink);
+  font-size: 11px;
+}
+.why-timeline-kpis {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+}
+.why-timeline-kpi {
+  color: var(--ink);
+}
+.why-timeline-kpi.good em {
+  color: #047857;
+  font-style: normal;
+  font-weight: 700;
+}
+.why-timeline-kpi.bad em {
+  color: #b91c1c;
+  font-style: normal;
+  font-weight: 700;
+}
+.why-timeline-kpi.mute em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+/* ── WhyCard IMPACT row ───────────────────────────────────────── */
+.why-impact {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+.why-impact-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--surface-3, #e5e7eb);
+  border-radius: 6px;
+  padding: 4px 10px;
+  min-width: 64px;
+  gap: 1px;
+}
+.why-impact-val {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ink);
+}
+.why-impact-sub {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.why-impact-arr {
+  font-size: 16px;
+  color: var(--muted);
+  line-height: 1;
+}
+.why-impact-badge {
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.why-impact-badge.helped {
+  background: #d1fae5;
+  color: #065f46;
+}
+.why-impact-badge.hurt {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.why-impact-badge.inconclusive {
+  background: var(--amber-soft);
+  color: #78350f;
+}
+.why-impact-badge.nodata {
+  background: var(--surface-3, #e5e7eb);
+  color: var(--muted);
 }
 
 /* ── CampaignCard drilldown ───────────────────────────────────── */
