@@ -1809,7 +1809,130 @@ function TimelineSection({ timeline }: { timeline: TimelineEntry[] }) {
   );
 }
 
-function WhyCard({
+// ───────── BidDecisionCard — clean redesign per reference ──────────────────
+
+const CATEGORY_BADGE: Record<
+  Category,
+  { cls: string; icon: string; label: string }
+> = {
+  "Correctly Managed": { cls: "ok", icon: "✓", label: "Correctly managed" },
+  Monitor: { cls: "monitor", icon: "⊙", label: "Monitor" },
+  "Winners Not Scaled": { cls: "warn", icon: "↑", label: "Winners not scaled" },
+  "Losers Not Reduced": { cls: "bad", icon: "↓", label: "Losers not reduced" },
+  "Profitable Terms Reduced": {
+    cls: "bad",
+    icon: "✗",
+    label: "Profitable cut",
+  },
+  "Unprofitable Terms Increased": {
+    cls: "bad",
+    icon: "✗",
+    label: "Money-loser raised",
+  },
+  "Too Many Bid Changes": {
+    cls: "warn",
+    icon: "⟳",
+    label: "Over-managed",
+  },
+  "Needs More Data": { cls: "muted", icon: "·", label: "Needs more data" },
+  "No Action Despite Enough Data": {
+    cls: "warn",
+    icon: "!",
+    label: "No action taken",
+  },
+};
+
+function decisionIdFromKey(key: string): string {
+  // Stable 6-char hash for the decision ID footer.
+  let h = 0;
+  for (let i = 0; i < key.length; i++) {
+    h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0").slice(0, 6);
+}
+
+function buildSubheadline(row: AuditRow): string {
+  const acosFmt = row.acos != null ? percent(row.acos) : null;
+  const move = formatBidChangeInline({
+    fromBid: row.previousBid,
+    toBid: row.latestBid,
+    changePct: row.bidChangePct,
+    extraChanges: 0,
+  });
+  switch (row.category) {
+    case "Correctly Managed":
+      return move
+        ? `The last bid move (${move}) matched its performance. "${row.targeting}" is on target${acosFmt ? ` at ${acosFmt} ACoS` : ""}.`
+        : `"${row.targeting}" is on target${acosFmt ? ` at ${acosFmt} ACoS` : ""}.`;
+    case "Winners Not Scaled":
+      return `"${row.targeting}" is profitable${acosFmt ? ` at ${acosFmt} ACoS` : ""} but the bid was not raised — leaving sales on the table.`;
+    case "Losers Not Reduced":
+      return `"${row.targeting}" is wasteful${acosFmt ? ` at ${acosFmt} ACoS` : ""} and the bid was not reduced.`;
+    case "Profitable Terms Reduced":
+      return `"${row.targeting}" was profitable${acosFmt ? ` at ${acosFmt} ACoS` : ""} yet the bid was cut${move ? ` (${move})` : ""}.`;
+    case "Unprofitable Terms Increased":
+      return `"${row.targeting}" is losing money${acosFmt ? ` at ${acosFmt} ACoS` : ""} yet the bid was raised${move ? ` (${move})` : ""}.`;
+    case "Too Many Bid Changes":
+      return `"${row.targeting}" had ${row.bidChanges} bid changes — more than one on the same day. The data is noisy.`;
+    case "Needs More Data":
+      return `"${row.targeting}" has ${number(row.clicks)} clicks and ${money2(row.spend)} spend — not enough to judge yet.`;
+    case "Monitor":
+      return `"${row.targeting}" is borderline${acosFmt ? ` (${acosFmt} ACoS)` : ""} — nothing urgent, watching for now.`;
+    default:
+      return row.reason;
+  }
+}
+
+function AcosSparkline({
+  timeline,
+  targetAcos,
+}: {
+  timeline: TimelineEntry[];
+  targetAcos: number;
+}) {
+  const points = timeline
+    .slice(-7)
+    .map((e) => e.perKpi.find((k) => k.kpi === "acos")?.rolling7Value ?? null)
+    .filter((v): v is number => v != null);
+  if (points.length < 2) return null;
+  const lastAcos = points[points.length - 1];
+  const ok = lastAcos <= targetAcos;
+  const min = Math.min(...points);
+  const max = Math.max(...points);
+  const range = Math.max(max - min, 0.0001);
+  const w = 80;
+  const h = 18;
+  const d = points
+    .map((v, i) => {
+      const x = (i / (points.length - 1)) * w;
+      const y = h - ((v - min) / range) * h;
+      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <svg
+      className="bdc-sparkline"
+      width={w}
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      aria-hidden="true"
+    >
+      <path
+        d={d}
+        fill="none"
+        stroke={ok ? "#047857" : "#b91c1c"}
+        strokeWidth={1.5}
+      />
+    </svg>
+  );
+}
+
+function bidPctClass(pct: number | null): string {
+  if (pct == null) return "neutral";
+  return pct >= 0 ? "pos" : "neg";
+}
+
+function BidDecisionCard({
   row,
   lookbackDays = 7,
   targetAcos = 0.25,
@@ -1818,131 +1941,514 @@ function WhyCard({
   lookbackDays?: number;
   targetAcos?: number;
 }) {
-  const [showMore, setShowMore] = useState(false);
-  const [showTimeline, setShowTimeline] = useState(false);
-  const bidArrow =
-    row.latestBid != null && row.previousBid != null
-      ? row.latestBid > row.previousBid
-        ? "↑"
-        : row.latestBid < row.previousBid
-          ? "↓"
-          : "→"
-      : null;
+  const [showChart, setShowChart] = useState(false);
+  const [actionState, setActionState] = useState<
+    "none" | "snoozed" | "acknowledged"
+  >("none");
+  const [showAllDates, setShowAllDates] = useState(false);
+  const [showRawData, setShowRawData] = useState(false);
+
+  const badge = CATEGORY_BADGE[row.category] ?? {
+    cls: "muted",
+    icon: "·",
+    label: row.category,
+  };
+  const today = new Date();
+  const reviewDate = today.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const headline = buildDoThis(row, lookbackDays);
+  const sub = buildSubheadline(row);
+  const decisionId = decisionIdFromKey(row.exactKey);
+
+  // Window summary for the meta strip — last `lookbackDays` of dailyRows.
+  const windowDates = (() => {
+    if (row.dailyRows.length === 0) return null;
+    const sorted = [...row.dailyRows]
+      .filter((d) => d.date)
+      .sort((a, b) => a.date!.getTime() - b.date!.getTime());
+    if (sorted.length === 0) return null;
+    const last = sorted[sorted.length - 1].date!;
+    const first = new Date(last.getTime() - (lookbackDays - 1) * 86_400_000);
+    const fmt = (d: Date) =>
+      d.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        timeZone: "UTC",
+      });
+    return `${fmt(first)} – ${fmt(last)}`;
+  })();
+
+  const lastChangeDateText = row.lastBidChangeDate
+    ? (() => {
+        const diff = Math.floor(
+          (today.getTime() - row.lastBidChangeDate.getTime()) / 86_400_000,
+        );
+        if (diff === 0) return "Last change today";
+        if (diff === 1) return "Last change yesterday";
+        return `Last change ${diff} days ago`;
+      })()
+    : "No bid changes in window";
+
+  // CVR/CPC derived numbers for the WHAT'S HAPPENING grid.
+  const cvr = row.cvr != null ? percent(row.cvr) : "—";
+  const cpc = row.cpc != null ? money2(row.cpc) : "—";
+  const roas = row.roas != null ? `${row.roas.toFixed(2)}×` : "—";
+  const avgOrderValue = row.orders > 0 ? money2(row.sales / row.orders) : null;
+
+  const acosOnTarget = row.acos != null && row.acos <= targetAcos;
+  const acosContext =
+    row.acos == null
+      ? "no sales in window"
+      : acosOnTarget
+        ? `on target · goal ≤ ${Math.round(targetAcos * 100)}%`
+        : `above ${Math.round(targetAcos * 100)}% target`;
+
+  const showImpact = row.impact.status !== "No bid change";
+
   return (
-    <div className="why-card">
-      <div className="why-row">
-        <span className="why-lbl">WHAT</span>
-        <span>{shortReason(row, lookbackDays)}</span>
-      </div>
-      <div className="why-row">
-        <span className="why-lbl">NUMBERS</span>
-        <div className="why-pills">
-          {row.acos != null && (
-            <span className="why-pill">ACoS {percent(row.acos)}</span>
-          )}
-          {row.spend > 0 && (
-            <span className="why-pill">Spend {money2(row.spend)}</span>
-          )}
-          {row.sales > 0 && (
-            <span className="why-pill">Sales {money2(row.sales)}</span>
-          )}
-          {row.orders > 0 && (
-            <span className="why-pill">{number(row.orders)} orders</span>
-          )}
-          {row.clicks > 0 && (
-            <span className="why-pill">{number(row.clicks)} clicks</span>
-          )}
-          {row.cvr != null && (
-            <span className="why-pill">CVR {percent(row.cvr)}</span>
-          )}
+    <div className="bdc">
+      {/* HEADER STRIP */}
+      <div className="bdc-header">
+        <div className="bdc-header-left">
+          <div className={`bdc-badge bdc-badge-${badge.cls}`}>{badge.icon}</div>
+          <div className="bdc-header-text">
+            <div className="bdc-status-line">
+              <span>{row.recommendation}</span>
+              <span className="bdc-dot-sep">·</span>
+              <span>{badge.label}</span>
+              <span className="bdc-dot-sep">·</span>
+              <span>Reviewed {reviewDate}</span>
+            </div>
+            <h2 className="bdc-headline">{headline}</h2>
+            <p className="bdc-subheadline">{sub}</p>
+          </div>
         </div>
-      </div>
-      {(row.previousBid != null || row.latestBid != null) && (
-        <div className="why-row">
-          <span className="why-lbl">BID MOVE</span>
-          <div className="why-bid">
-            {row.previousBid != null && <span>{money2(row.previousBid)}</span>}
-            {bidArrow && <span className="why-bid-arr">{bidArrow}</span>}
-            {row.latestBid != null && <span>{money2(row.latestBid)}</span>}
-            {row.bidChangePct != null && (
+        <div className="bdc-header-right">
+          <div className="bdc-pills">
+            <span className={`bdc-pill bdc-pill-${priorityTone(row.priority)}`}>
+              {row.priority} priority
+            </span>
+            <span className="bdc-pill bdc-pill-muted">
               <span
-                className={`why-bid-pct ${row.bidChangePct >= 0 ? "pos" : "neg"}`}
-              >
-                {row.bidChangePct >= 0 ? "+" : ""}
-                {(row.bidChangePct * 100).toFixed(1)}%
+                className={`bdc-pill-dot ${row.confidence.toLowerCase()}`}
+              />
+              {row.confidence} confidence · {row.matchLevel.toLowerCase()}
+            </span>
+          </div>
+          <div className="bdc-actions">
+            {actionState === "snoozed" && (
+              <span className="bdc-action-state">Snoozed · 7d</span>
+            )}
+            {actionState === "acknowledged" && (
+              <span className="bdc-action-state bdc-action-state-ack">
+                ✓ Acknowledged
               </span>
             )}
-            {row.bidChanges > 0 && (
-              <span className="why-bid-meta">
-                {row.bidChanges} change{row.bidChanges !== 1 ? "s" : ""}
-              </span>
+            {actionState === "none" && (
+              <>
+                <button type="button" className="bdc-btn bdc-btn-ghost">
+                  Hide
+                </button>
+                <button
+                  type="button"
+                  className="bdc-btn bdc-btn-ghost"
+                  onClick={() => setActionState("snoozed")}
+                >
+                  Snooze 7d
+                </button>
+                <button
+                  type="button"
+                  className="bdc-btn bdc-btn-primary"
+                  onClick={() => setActionState("acknowledged")}
+                >
+                  Acknowledge
+                </button>
+              </>
             )}
           </div>
         </div>
-      )}
-      {row.impact.status !== "No bid change" && (
-        <ImpactRow impact={row.impact} />
-      )}
-      <div className="why-row">
-        <span className="why-lbl">DO THIS</span>
-        <strong className="why-do-this">
-          {buildDoThis(row, lookbackDays)}
-        </strong>
       </div>
-      {row.timeline.length > 0 && <TimelineSection timeline={row.timeline} />}
-      <button
-        type="button"
-        className="why-more-btn"
-        onClick={() => setShowMore(!showMore)}
-      >
-        {showMore ? "▲ less" : "▼ how it was decided"}
-      </button>
-      {showMore && (
-        <div className="why-detail-extra">
-          {row.category === "Too Many Bid Changes" && (
-            <p className="why-threshold-note">
-              <strong>Rule:</strong> flagged when 2 or more bid changes happen
-              on the same calendar day.
-            </p>
-          )}
-          <p>
-            <strong>Rule:</strong> {row.explain.rule}
-          </p>
-          {row.explain.whyPriority && (
-            <p>
-              <strong>Priority:</strong> {row.explain.whyPriority}
-            </p>
-          )}
-          {row.explain.whyConfidence && (
-            <p>
-              <strong>Confidence:</strong> {row.explain.whyConfidence}
-            </p>
-          )}
-          {row.impact.status === "Incomplete window" && (
-            <p className="why-threshold-note">
-              * Before/after window is incomplete — the post-change period has
-              fewer days than the pre-change period. Check back when more data
-              has collected.
-            </p>
+
+      {/* META STRIP */}
+      <div className="bdc-meta">
+        <div className="bdc-meta-cell">
+          <div className="bdc-meta-label">Campaign</div>
+          <div className="bdc-meta-value">{row.campaign}</div>
+          <div className="bdc-meta-sub">{row.adGroup}</div>
+        </div>
+        <div className="bdc-meta-cell">
+          <div className="bdc-meta-label">Target</div>
+          <div className="bdc-meta-value">{row.targeting}</div>
+          <div className="bdc-meta-sub">
+            {row.matchType ? `${row.matchType} match` : "—"}
+          </div>
+        </div>
+        <div className="bdc-meta-cell">
+          <div className="bdc-meta-label">Window</div>
+          <div className="bdc-meta-value">{windowDates ?? "—"}</div>
+          <div className="bdc-meta-sub">Rolling {lookbackDays} days</div>
+        </div>
+        <div className="bdc-meta-cell">
+          <div className="bdc-meta-label">Bid history</div>
+          <div className="bdc-meta-value">
+            {row.bidChanges} change{row.bidChanges !== 1 ? "s" : ""}
+          </div>
+          <div className="bdc-meta-sub">{lastChangeDateText}</div>
+        </div>
+      </div>
+
+      {/* MAIN GRID */}
+      <div className="bdc-main">
+        {/* LEFT COLUMN */}
+        <div className="bdc-col bdc-col-left">
+          <section className="bdc-section">
+            <div className="bdc-section-label">What's happening</div>
+            <div className="bdc-kpi-grid">
+              <div className="bdc-kpi">
+                <div className="bdc-kpi-label">ACoS</div>
+                <div className={`bdc-kpi-value ${acosOnTarget ? "ok" : "bad"}`}>
+                  {row.acos != null ? percent(row.acos) : "—"}
+                </div>
+                <AcosSparkline
+                  timeline={row.timeline}
+                  targetAcos={targetAcos}
+                />
+                <div className="bdc-kpi-sub">{acosContext}</div>
+              </div>
+              <div className="bdc-kpi">
+                <div className="bdc-kpi-label">Spend</div>
+                <div className="bdc-kpi-value">{money2(row.spend)}</div>
+                <div className="bdc-kpi-sub">{lookbackDays}-day rolling</div>
+              </div>
+              <div className="bdc-kpi">
+                <div className="bdc-kpi-label">Sales</div>
+                <div className="bdc-kpi-value">{money2(row.sales)}</div>
+                <div className="bdc-kpi-sub">
+                  {row.orders} order{row.orders !== 1 ? "s" : ""} · {roas} ROAS
+                </div>
+              </div>
+              <div className="bdc-kpi">
+                <div className="bdc-kpi-label">Clicks</div>
+                <div className="bdc-kpi-value">{number(row.clicks)}</div>
+                <div className="bdc-kpi-sub">CVR {cvr}</div>
+              </div>
+              <div className="bdc-kpi">
+                <div className="bdc-kpi-label">Orders</div>
+                <div className="bdc-kpi-value">{number(row.orders)}</div>
+                <div className="bdc-kpi-sub">
+                  {avgOrderValue ? `avg ${avgOrderValue}` : "—"}
+                </div>
+              </div>
+              <div className="bdc-kpi">
+                <div className="bdc-kpi-label">CPC</div>
+                <div className="bdc-kpi-value">{cpc}</div>
+                <div className="bdc-kpi-sub">
+                  {row.currentBid != null
+                    ? `at ${money2(row.currentBid)} max bid`
+                    : row.latestBid != null
+                      ? `last bid ${money2(row.latestBid)}`
+                      : "—"}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {(row.previousBid != null || row.latestBid != null) && (
+            <section className="bdc-section">
+              <div className="bdc-section-label">Most recent bid move</div>
+              <div className="bdc-bid-move">
+                <div className="bdc-bid-move-left">
+                  {row.previousBid != null && (
+                    <span className="bdc-bid-from">
+                      {money2(row.previousBid)}
+                    </span>
+                  )}
+                  <span className="bdc-bid-arrow">→</span>
+                  {row.latestBid != null && (
+                    <span className="bdc-bid-to">{money2(row.latestBid)}</span>
+                  )}
+                  {row.bidChangePct != null && (
+                    <span
+                      className={`bdc-bid-chip ${bidPctClass(row.bidChangePct)}`}
+                    >
+                      {row.bidChangePct >= 0 ? "+" : ""}
+                      {(row.bidChangePct * 100).toFixed(1)}%
+                    </span>
+                  )}
+                </div>
+                <div className="bdc-bid-move-right">
+                  <div>
+                    {row.lastBidChangeDate
+                      ? row.lastBidChangeDate.toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                        })
+                      : "—"}
+                  </div>
+                  <div className="bdc-bid-move-sub">
+                    {row.bidChanges > 0 &&
+                      `${row.bidChanges}${ordinalSuffix(row.bidChanges)} change`}
+                  </div>
+                </div>
+              </div>
+            </section>
           )}
         </div>
-      )}
+
+        {/* RIGHT COLUMN */}
+        <div className="bdc-col bdc-col-right">
+          {row.timeline.length > 0 && (
+            <section className="bdc-section">
+              <div className="bdc-section-label">
+                How it was decided · Rolling 7-day verdict
+              </div>
+              <BdcVerdictTimeline
+                timeline={row.timeline}
+                showAll={showAllDates}
+                onToggleAll={() => setShowAllDates(!showAllDates)}
+              />
+            </section>
+          )}
+
+          {showImpact && (
+            <section className="bdc-section">
+              <div className="bdc-section-label">Impact of latest move</div>
+              <BdcImpactSplit impact={row.impact} />
+              {(row.impact.postDays === 0 ||
+                row.impact.status === "Incomplete window") && (
+                <div className="bdc-notice">
+                  <span className="bdc-notice-icon">ⓘ</span>
+                  <span>
+                    {row.impact.postDays === 0
+                      ? `Bid changed today — no after-data yet. Anchored on ${fmtIsoShort(row.impact.changeDateIso)}. Check back tomorrow for the first reading.`
+                      : `Before/after window is incomplete. Anchored on ${fmtIsoShort(row.impact.changeDateIso)}. Verdict may shift as more data collects.`}
+                  </span>
+                </div>
+              )}
+            </section>
+          )}
+        </div>
+      </div>
+
+      {/* CHART TOGGLE */}
       {row.dailyRows.length >= 3 && (
-        <div className="why-timeline-section">
+        <div className="bdc-chart-toggle">
           <button
             type="button"
-            className="why-more-btn"
-            onClick={() => setShowTimeline(!showTimeline)}
+            className="bdc-toggle-btn"
+            onClick={() => setShowChart(!showChart)}
           >
-            {showTimeline ? "Hide timeline ▴" : "Show bid timeline ▾"}
+            {showChart
+              ? "▴ Hide bid timeline chart"
+              : "▾ Show bid timeline chart"}
           </button>
-          {showTimeline && (
-            <BidTimelineChart row={row} targetAcos={targetAcos} />
+          {showChart && (
+            <div className="bdc-chart-wrap">
+              <BidTimelineChart row={row} targetAcos={targetAcos} />
+            </div>
           )}
         </div>
+      )}
+
+      {/* FOOTER */}
+      <div className="bdc-footer">
+        <div className="bdc-footer-left">
+          Decision ID <code>dec_{decisionId}</code> · generated by Rules v4.2
+        </div>
+        <div className="bdc-footer-right">
+          <button
+            type="button"
+            className="bdc-link"
+            onClick={() => setShowRawData(!showRawData)}
+          >
+            {showRawData ? "Hide raw data" : "View raw data"}
+          </button>
+        </div>
+      </div>
+      {showRawData && (
+        <pre className="bdc-raw-data">
+          {JSON.stringify(
+            {
+              campaign: row.campaign,
+              adGroup: row.adGroup,
+              targeting: row.targeting,
+              matchType: row.matchType,
+              category: row.category,
+              recommendation: row.recommendation,
+              priority: row.priority,
+              confidence: row.confidence,
+              matchLevel: row.matchLevel,
+              previousBid: row.previousBid,
+              latestBid: row.latestBid,
+              bidChangePct: row.bidChangePct,
+              bidChanges: row.bidChanges,
+              spend: row.spend,
+              sales: row.sales,
+              orders: row.orders,
+              clicks: row.clicks,
+              acos: row.acos,
+              impact: row.impact,
+              rule: row.explain.rule,
+            },
+            null,
+            2,
+          )}
+        </pre>
       )}
     </div>
   );
+}
+
+function ordinalSuffix(n: number): string {
+  const v = n % 100;
+  if (v >= 11 && v <= 13) return "th";
+  switch (n % 10) {
+    case 1:
+      return "st";
+    case 2:
+      return "nd";
+    case 3:
+      return "rd";
+    default:
+      return "th";
+  }
+}
+
+function BdcVerdictTimeline({
+  timeline,
+  showAll,
+  onToggleAll,
+}: {
+  timeline: TimelineEntry[];
+  showAll: boolean;
+  onToggleAll: () => void;
+}) {
+  const sorted = [...timeline].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const visible = showAll ? sorted : sorted.slice(0, 4);
+  const fmtDate = (iso: string) => {
+    const [y, m, d] = iso.split("-");
+    if (!y || !m || !d) return iso;
+    const dt = new Date(Date.UTC(+y, +m - 1, +d));
+    return dt.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    });
+  };
+  return (
+    <div className="bdc-verdict-list">
+      {visible.map((entry, idx) => {
+        const isLast = idx === visible.length - 1;
+        const firstKpi = entry.perKpi[0];
+        if (!firstKpi) return null;
+        const v = verdictLabel(firstKpi.verdict);
+        const valueText =
+          firstKpi.rolling7Value != null
+            ? formatKpiValue(firstKpi.kpi, firstKpi.rolling7Value)
+            : firstKpi.zeroSalesWithSpend
+              ? "— (0 sales)"
+              : "—";
+        const cmp =
+          firstKpi.worseThanThreshold == null
+            ? ""
+            : firstKpi.worseThanThreshold
+              ? ` — worse than ${formatKpiValue(firstKpi.kpi, firstKpi.threshold)}`
+              : ` — better than ${formatKpiValue(firstKpi.kpi, firstKpi.threshold)}`;
+        const bidText =
+          firstKpi.bidDirection === null
+            ? "no change"
+            : `bid ${firstKpi.bidDirection}`;
+        const bidInline = formatBidChangeInline(firstKpi.bidChange);
+        return (
+          <div key={entry.date} className="bdc-verdict-row">
+            <div className="bdc-verdict-bullet-col">
+              <span className={`bdc-verdict-dot ${v.cls}`} />
+              {!isLast && <span className="bdc-verdict-line" />}
+            </div>
+            <div className="bdc-verdict-body">
+              <div className="bdc-verdict-head">
+                <strong>{fmtDate(entry.date)}</strong>
+                <span>
+                  {KPI_LABEL[firstKpi.kpi]} {valueText}
+                  {cmp}, {bidText}
+                </span>
+              </div>
+              {bidInline && <div className="bdc-verdict-bid">{bidInline}</div>}
+              <div className={`bdc-verdict-tag ${v.cls}`}>
+                {v.icon} {v.text}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+      {sorted.length > 4 && (
+        <button type="button" className="bdc-show-all" onClick={onToggleAll}>
+          {showAll ? "▴ Show recent only" : `Show all ${sorted.length} dates →`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function BdcImpactSplit({ impact }: { impact: BeforeAfterImpact }) {
+  const preRange =
+    impact.preStartIso && impact.preEndIso
+      ? `${fmtIsoShort(impact.preStartIso)} – ${fmtIsoShort(impact.preEndIso)}`
+      : "";
+  const postRange =
+    impact.postStartIso && impact.postEndIso && impact.postDays > 0
+      ? `${fmtIsoShort(impact.postStartIso)} – ${fmtIsoShort(impact.postEndIso)}`
+      : "(empty)";
+  return (
+    <div className="bdc-impact-split">
+      <div className="bdc-impact-side">
+        <div className="bdc-impact-head">
+          <div>7 days before</div>
+          <div className="bdc-impact-range">{preRange}</div>
+        </div>
+        <div className="bdc-impact-row">
+          <span>ACoS</span>
+          <strong>
+            {impact.preAcos != null ? percent(impact.preAcos) : "—"}
+          </strong>
+        </div>
+        <div className="bdc-impact-row">
+          <span>Sales</span>
+          <strong>{money2(impact.preSales)}</strong>
+        </div>
+      </div>
+      <span className="bdc-impact-arr">→</span>
+      <div className="bdc-impact-side">
+        <div className="bdc-impact-head">
+          <div>
+            {impact.postDays} day{impact.postDays !== 1 ? "s" : ""} after
+          </div>
+          <div className="bdc-impact-range">{postRange}</div>
+        </div>
+        <div className="bdc-impact-row">
+          <span>ACoS</span>
+          <strong>
+            {impact.postAcos != null ? percent(impact.postAcos) : "—"}
+          </strong>
+        </div>
+        <div className="bdc-impact-row">
+          <span>Sales</span>
+          <strong>{money2(impact.postSales)}</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WhyCard(props: {
+  row: AuditRow;
+  lookbackDays?: number;
+  targetAcos?: number;
+}) {
+  return <BidDecisionCard {...props} />;
 }
 
 function MoveItem({
