@@ -859,31 +859,66 @@ function buildTimeline(
     });
 
     let bidDirection: "increased" | "reduced" | null = null;
+    let bidChange: TimelineKpiVerdict["bidChange"] = null;
     if (windowBidChanges.length > 0) {
       const last = windowBidChanges[windowBidChanges.length - 1];
       if (last.bidChangePct != null) {
         if (last.bidChangePct > 0) bidDirection = "increased";
         else if (last.bidChangePct < 0) bidDirection = "reduced";
       }
+      bidChange = {
+        fromBid: last.fromBid,
+        toBid: last.toBid,
+        changePct: last.bidChangePct,
+        extraChanges: windowBidChanges.length - 1,
+      };
     }
+
+    const hasActivity =
+      spend > 0 || clicks > 0 || impressions > 0 || orders > 0;
 
     const perKpi: TimelineKpiVerdict[] = kpis.map((kt) => {
       let value: number | null;
+      let zeroSalesWithSpend = false;
+      let noActivity = false;
       switch (kt.kpi) {
         case "acos":
-          value = sales > 0 ? spend / sales : null;
+          if (sales > 0) value = spend / sales;
+          else if (spend > 0) {
+            value = null;
+            zeroSalesWithSpend = true;
+          } else {
+            value = null;
+            noActivity = true;
+          }
           break;
         case "cvr":
-          value = clicks > 0 ? orders / clicks : null;
+          if (clicks > 0) value = orders / clicks;
+          else {
+            value = null;
+            noActivity = !hasActivity;
+            zeroSalesWithSpend = hasActivity;
+          }
           break;
         case "ctr":
-          value = impressions > 0 ? clicks / impressions : null;
+          if (impressions > 0) value = clicks / impressions;
+          else {
+            value = null;
+            noActivity = !hasActivity;
+            zeroSalesWithSpend = hasActivity;
+          }
           break;
         case "roas":
-          value = spend > 0 ? sales / spend : null;
+          if (spend > 0) value = sales / spend;
+          else {
+            value = null;
+            noActivity = !hasActivity;
+          }
           break;
         case "spend":
+          // Spend is always defined (>=0). Never null.
           value = spend;
+          if (!hasActivity) noActivity = true;
           break;
         default:
           value = null;
@@ -895,18 +930,21 @@ function buildTimeline(
           kt.direction === "lower"
             ? value > kt.threshold
             : value < kt.threshold;
+      } else if (zeroSalesWithSpend) {
+        // Spending without return = worse than threshold by intent.
+        worseThanThreshold = true;
       }
 
       let verdict: TimelineKpiVerdict["verdict"];
-      if (worseThanThreshold == null) {
+      if (noActivity) {
+        verdict = "no_activity";
+      } else if (worseThanThreshold == null) {
         verdict = "no_data";
       } else if (worseThanThreshold) {
-        // Want bid reduced
         if (bidDirection === null) verdict = "not_reduced";
         else if (bidDirection === "reduced") verdict = "acted_correctly";
         else verdict = "wrong_direction";
       } else {
-        // Want bid increased
         if (bidDirection === null) verdict = "not_increased";
         else if (bidDirection === "increased") verdict = "acted_correctly";
         else verdict = "wrong_direction";
@@ -918,6 +956,9 @@ function buildTimeline(
         threshold: kt.threshold,
         worseThanThreshold,
         bidDirection,
+        bidChange,
+        zeroSalesWithSpend,
+        noActivity,
         verdict,
       };
     });
@@ -1478,6 +1519,7 @@ function calculateBeforeAfter(
     else label = "Inconclusive";
   }
 
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
   return {
     status: full ? "Full window" : "Incomplete window",
     label,
@@ -1491,6 +1533,11 @@ function calculateBeforeAfter(
     postAcos: post.acos,
     preDays: pre.days,
     postDays: post.days,
+    changeDateIso: iso(changeDate),
+    preStartIso: iso(preStart),
+    preEndIso: iso(preEnd),
+    postStartIso: iso(postStart),
+    postEndIso: iso(postEnd),
   };
 }
 
@@ -2018,6 +2065,11 @@ function emptyImpact(
     postAcos: null,
     preDays: 0,
     postDays: 0,
+    changeDateIso: null,
+    preStartIso: null,
+    preEndIso: null,
+    postStartIso: null,
+    postEndIso: null,
   };
 }
 

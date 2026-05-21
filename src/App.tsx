@@ -54,6 +54,7 @@ import type { BulkTarget } from "./lib/analysis";
 import {
   AnalysisResult,
   AuditRow,
+  BeforeAfterImpact,
   CampaignSummary,
   Category,
   Mode,
@@ -218,7 +219,7 @@ export default function App() {
     };
   }
 
-  function compute(next: Thresholds) {
+  function compute(next: Thresholds, opts: { collapseUploads?: boolean } = {}) {
     if (!historyRaw || !targetingRaw) {
       setError(
         "Add both base files: the Amazon Ads History export and the Sponsored Products Targeting report.",
@@ -237,7 +238,9 @@ export default function App() {
           buildOpts(),
         ),
       );
-      setShowUploads(false);
+      // Only collapse on the user-initiated Analyze action — not on
+      // threshold/KPI tweaks, which would close the settings panel mid-edit.
+      if (opts.collapseUploads) setShowUploads(false);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Unable to analyze the files.",
@@ -246,7 +249,7 @@ export default function App() {
   }
 
   function runAnalysis() {
-    compute(thresholds);
+    compute(thresholds, { collapseUploads: true });
   }
 
   function updateThresholds(next: Thresholds) {
@@ -526,21 +529,6 @@ function ThresholdPanel({
         <strong>Thresholds</strong>
       </div>
       <div className="threshold-grid">
-        <label>
-          Mode
-          <select
-            value={thresholds.mode}
-            onChange={(event) =>
-              onChange(
-                thresholdsForMode(event.target.value as Mode, thresholds),
-              )
-            }
-          >
-            <option>Conservative</option>
-            <option>Balanced</option>
-            <option>Aggressive</option>
-          </select>
-        </label>
         <label>
           Target ACoS (%)
           <input
@@ -1003,7 +991,113 @@ function windowExplain(row: AuditRow, lookbackDays: number): string {
 }
 
 // ── Per-target bid timeline chart ──────────────────────────────────────────
-type DayAgg = { spend: number; sales: number; orders: number; label: string };
+type DayAgg = {
+  spend: number;
+  sales: number;
+  orders: number;
+  clicks: number;
+  impressions: number;
+  label: string;
+};
+
+type KpiId =
+  | "spend"
+  | "sales"
+  | "acos"
+  | "orders"
+  | "clicks"
+  | "impressions"
+  | "ctr"
+  | "cvr"
+  | "roas"
+  | "cpc";
+
+interface KpiDef {
+  id: KpiId;
+  label: string;
+  color: string;
+  axis: "money" | "percent" | "count" | "roas";
+  dashed?: boolean;
+  format: (v: number) => string;
+}
+
+const CHART_KPIS: KpiDef[] = [
+  {
+    id: "spend",
+    label: "Spend",
+    color: "#2563eb",
+    axis: "money",
+    format: (v) => `$${v.toFixed(2)}`,
+  },
+  {
+    id: "sales",
+    label: "Sales",
+    color: "#0891b2",
+    axis: "money",
+    format: (v) => `$${v.toFixed(2)}`,
+  },
+  {
+    id: "acos",
+    label: "ACoS %",
+    color: "#ef4444",
+    axis: "percent",
+    format: (v) => `${v.toFixed(1)}%`,
+  },
+  {
+    id: "orders",
+    label: "Orders",
+    color: "#16a34a",
+    axis: "count",
+    dashed: true,
+    format: (v) => `${v.toFixed(0)}`,
+  },
+  {
+    id: "clicks",
+    label: "Clicks",
+    color: "#a855f7",
+    axis: "count",
+    dashed: true,
+    format: (v) => `${v.toFixed(0)}`,
+  },
+  {
+    id: "impressions",
+    label: "Impressions",
+    color: "#64748b",
+    axis: "count",
+    dashed: true,
+    format: (v) => `${v.toFixed(0)}`,
+  },
+  {
+    id: "ctr",
+    label: "CTR %",
+    color: "#d97706",
+    axis: "percent",
+    format: (v) => `${v.toFixed(2)}%`,
+  },
+  {
+    id: "cvr",
+    label: "CVR %",
+    color: "#db2777",
+    axis: "percent",
+    format: (v) => `${v.toFixed(1)}%`,
+  },
+  {
+    id: "roas",
+    label: "ROAS",
+    color: "#0d9488",
+    axis: "roas",
+    format: (v) => `${v.toFixed(2)}x`,
+  },
+  {
+    id: "cpc",
+    label: "CPC",
+    color: "#7c3aed",
+    axis: "money",
+    format: (v) => `$${v.toFixed(2)}`,
+  },
+];
+
+const KPI_BY_ID = new Map(CHART_KPIS.map((k) => [k.id, k]));
 
 function BidTimelineChart({
   row,
@@ -1015,6 +1109,9 @@ function BidTimelineChart({
   const [expanded, setExpanded] = useState(false);
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
+  const [visible, setVisible] = useState<Set<KpiId>>(
+    () => new Set<KpiId>(["spend", "acos", "orders"]),
+  );
 
   // Build the full day map / bid change map once per row.
   const built = useMemo(() => {
@@ -1027,11 +1124,15 @@ function BidTimelineChart({
         ex.spend += dr.spend;
         ex.sales += dr.sales;
         ex.orders += dr.orders;
+        ex.clicks += dr.clicks;
+        ex.impressions += dr.impressions;
       } else {
         dayMap.set(k, {
           spend: dr.spend,
           sales: dr.sales,
           orders: dr.orders,
+          clicks: dr.clicks,
+          impressions: dr.impressions,
           label: dr.date.toLocaleDateString("en-US", {
             month: "short",
             day: "numeric",
@@ -1050,6 +1151,8 @@ function BidTimelineChart({
           spend: 0,
           sales: 0,
           orders: 0,
+          clicks: 0,
+          impressions: 0,
           label: h.time.toLocaleDateString("en-US", {
             month: "short",
             day: "numeric",
@@ -1062,7 +1165,7 @@ function BidTimelineChart({
     return { dayMap, bidChangeMap, allDateKeys };
   }, [row.dailyRows, row.allBidChanges]);
 
-  // Apply date filter to keys + chart data.
+  // Apply date filter to keys + chart data (compute ALL KPI values per day).
   const filtered = useMemo(() => {
     const { dayMap, allDateKeys } = built;
     const inRange = (k: string) => {
@@ -1073,12 +1176,24 @@ function BidTimelineChart({
     const keys = allDateKeys.filter(inRange);
     const chartData = keys.map((k) => {
       const d = dayMap.get(k)!;
+      const acos = d.sales > 0 ? (d.spend / d.sales) * 100 : null;
+      const ctr = d.impressions > 0 ? (d.clicks / d.impressions) * 100 : null;
+      const cvr = d.clicks > 0 ? (d.orders / d.clicks) * 100 : null;
+      const roas = d.spend > 0 ? d.sales / d.spend : null;
+      const cpc = d.clicks > 0 ? d.spend / d.clicks : null;
       return {
         dateKey: k,
         label: d.label,
         spend: d.spend > 0 ? d.spend : null,
-        acos: d.sales > 0 ? (d.spend / d.sales) * 100 : null,
+        sales: d.sales > 0 ? d.sales : null,
+        acos,
         orders: d.orders > 0 ? d.orders : null,
+        clicks: d.clicks > 0 ? d.clicks : null,
+        impressions: d.impressions > 0 ? d.impressions : null,
+        ctr,
+        cvr,
+        roas,
+        cpc,
       };
     });
     const tickInterval =
@@ -1089,6 +1204,23 @@ function BidTimelineChart({
           : 0;
     return { keys, chartData, tickInterval };
   }, [built, fromDate, toDate]);
+
+  // Pick which axes to render based on visible KPIs.
+  const visibleAxes = useMemo(() => {
+    const axes = new Set<KpiDef["axis"]>();
+    for (const id of visible) {
+      const k = KPI_BY_ID.get(id);
+      if (k) axes.add(k.axis);
+    }
+    return axes;
+  }, [visible]);
+
+  const toggleKpi = (id: KpiId) => {
+    const next = new Set(visible);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setVisible(next);
+  };
 
   if (row.dailyRows.length < 3) {
     return (
@@ -1141,35 +1273,50 @@ function BidTimelineChart({
             tick={{ fontSize: 10 }}
             interval={tickInterval}
           />
-          <YAxis
-            yAxisId="spend"
-            orientation="left"
-            tick={{ fontSize: 10 }}
-            tickFormatter={(v) => `$${(v as number).toFixed(0)}`}
-            width={46}
-          />
-          <YAxis
-            yAxisId="acos"
-            orientation="right"
-            tick={{ fontSize: 10 }}
-            tickFormatter={(v) => `${(v as number).toFixed(0)}%`}
-            width={38}
-          />
-          <YAxis yAxisId="orders" orientation="right" hide />
+          {visibleAxes.has("money") && (
+            <YAxis
+              yAxisId="money"
+              orientation="left"
+              tick={{ fontSize: 10 }}
+              tickFormatter={(v) => `$${(v as number).toFixed(0)}`}
+              width={46}
+            />
+          )}
+          {visibleAxes.has("percent") && (
+            <YAxis
+              yAxisId="percent"
+              orientation="right"
+              tick={{ fontSize: 10 }}
+              tickFormatter={(v) => `${(v as number).toFixed(0)}%`}
+              width={38}
+            />
+          )}
+          {visibleAxes.has("count") && (
+            <YAxis yAxisId="count" orientation="right" hide />
+          )}
+          {visibleAxes.has("roas") && (
+            <YAxis yAxisId="roas" orientation="right" hide />
+          )}
+          {/* Anchor axis for bid markers when no other axis is visible */}
+          {visibleAxes.size === 0 && (
+            <YAxis yAxisId="money" orientation="left" hide />
+          )}
 
-          {/* Target ACoS dashed horizontal reference */}
-          <ReferenceLine
-            yAxisId="acos"
-            y={targetAcos * 100}
-            stroke="#ef4444"
-            strokeDasharray="4 3"
-            label={{
-              value: "Target",
-              position: "right",
-              fill: "#ef4444",
-              fontSize: 10,
-            }}
-          />
+          {/* Target ACoS dashed horizontal reference (only when ACoS visible) */}
+          {visible.has("acos") && (
+            <ReferenceLine
+              yAxisId="percent"
+              y={targetAcos * 100}
+              stroke="#ef4444"
+              strokeDasharray="4 3"
+              label={{
+                value: "Target",
+                position: "right",
+                fill: "#ef4444",
+                fontSize: 10,
+              }}
+            />
+          )}
 
           {/* Bid change vertical event markers — only within the visible range */}
           {row.allBidChanges.map((h, i) => {
@@ -1184,10 +1331,19 @@ function BidTimelineChart({
               h.bidChangePct != null
                 ? `${isUp ? "+" : ""}${(h.bidChangePct * 100).toFixed(0)}%`
                 : "";
+            const markerAxis = visibleAxes.has("money")
+              ? "money"
+              : visibleAxes.has("percent")
+                ? "percent"
+                : visibleAxes.has("count")
+                  ? "count"
+                  : visibleAxes.has("roas")
+                    ? "roas"
+                    : "money";
             return (
               <ReferenceLine
                 key={i}
-                yAxisId="spend"
+                yAxisId={markerAxis}
                 x={d.label}
                 stroke={isUp ? "#16a34a" : "#ef4444"}
                 strokeWidth={1.5}
@@ -1205,36 +1361,34 @@ function BidTimelineChart({
           <Tooltip
             content={({ active, payload }) => {
               if (!active || !payload?.length) return null;
-              const pt = payload[0]?.payload as {
-                dateKey: string;
-                label: string;
-                spend: number | null;
-                acos: number | null;
-                orders: number | null;
-              };
+              const pt = payload[0]?.payload as Record<
+                string,
+                number | string | null
+              >;
+              const dateKey = pt.dateKey as string;
+              const label = pt.label as string;
               const bc =
-                bidChangeMap.get(pt.dateKey) ||
+                bidChangeMap.get(dateKey) ||
                 bidChangeMap.get(
-                  allDateKeys[allDateKeys.indexOf(pt.dateKey) - 1] ?? "",
+                  allDateKeys[allDateKeys.indexOf(dateKey) - 1] ?? "",
                 ) ||
                 bidChangeMap.get(
-                  allDateKeys[allDateKeys.indexOf(pt.dateKey) + 1] ?? "",
+                  allDateKeys[allDateKeys.indexOf(dateKey) + 1] ?? "",
                 );
               return (
                 <div className="scatter-tooltip">
-                  <strong>{pt.label}</strong>
-                  {pt.acos != null && (
-                    <div
-                      style={{
-                        color:
-                          pt.acos > targetAcos * 100 ? "#ef4444" : "#16a34a",
-                      }}
-                    >
-                      ACoS: {pt.acos.toFixed(1)}%
-                    </div>
-                  )}
-                  {pt.spend != null && <div>Spend: {money2(pt.spend)}</div>}
-                  {pt.orders != null && <div>Orders: {pt.orders}</div>}
+                  <strong>{label}</strong>
+                  {[...visible].map((id) => {
+                    const kpi = KPI_BY_ID.get(id);
+                    const val = pt[id];
+                    if (!kpi || val == null || typeof val !== "number")
+                      return null;
+                    return (
+                      <div key={id} style={{ color: kpi.color }}>
+                        {kpi.label}: {kpi.format(val)}
+                      </div>
+                    );
+                  })}
                   {bc?.toBid != null && (
                     <>
                       <div
@@ -1271,55 +1425,52 @@ function BidTimelineChart({
             }}
           />
 
-          <Line
-            yAxisId="spend"
-            type="monotone"
-            dataKey="spend"
-            stroke="#2563eb"
-            strokeWidth={1.5}
-            dot={false}
-            connectNulls
-            name="Spend"
-          />
-          <Line
-            yAxisId="acos"
-            type="monotone"
-            dataKey="acos"
-            stroke="#ef4444"
-            strokeWidth={1.5}
-            dot={false}
-            connectNulls
-            name="ACoS %"
-          />
-          <Line
-            yAxisId="orders"
-            type="monotone"
-            dataKey="orders"
-            stroke="#16a34a"
-            strokeWidth={1.5}
-            strokeDasharray="4 2"
-            dot={false}
-            connectNulls
-            name="Orders"
-          />
+          {/* Dynamically render lines for selected KPIs only */}
+          {[...visible].map((id) => {
+            const kpi = KPI_BY_ID.get(id);
+            if (!kpi) return null;
+            return (
+              <Line
+                key={id}
+                yAxisId={kpi.axis}
+                type="monotone"
+                dataKey={kpi.id}
+                stroke={kpi.color}
+                strokeWidth={1.5}
+                strokeDasharray={kpi.dashed ? "4 2" : undefined}
+                dot={false}
+                connectNulls
+                name={kpi.label}
+                isAnimationActive={false}
+              />
+            );
+          })}
         </ComposedChart>
       </ResponsiveContainer>
-      <div className="bid-timeline-legend">
-        <span style={{ color: "#2563eb" }}>── Spend</span>
-        <span style={{ color: "#ef4444" }}>── ACoS %</span>
-        <span style={{ color: "#16a34a" }}>╌╌ Orders</span>
-        {hasBidChanges && <span style={{ color: "#16a34a" }}>↑ Bid up</span>}
-        {hasBidChanges && <span style={{ color: "#ef4444" }}>↓ Bid down</span>}
-        <span
-          style={{
-            color: "#ef4444",
-            borderBottom: "2px dashed #ef4444",
-            paddingBottom: 1,
-          }}
-        >
-          Target ACoS
-        </span>
-      </div>
+      {visible.size === 0 && (
+        <p className="bid-timeline-no-data">
+          Select at least one KPI to view the chart.
+        </p>
+      )}
+    </div>
+  );
+
+  const kpiChips = (
+    <div className="bid-timeline-kpi-chips">
+      {CHART_KPIS.map((kpi) => {
+        const on = visible.has(kpi.id);
+        return (
+          <button
+            key={kpi.id}
+            type="button"
+            className={`kpi-chip${on ? " on" : ""}`}
+            onClick={() => toggleKpi(kpi.id)}
+          >
+            <span className="kpi-chip-dot" style={{ background: kpi.color }} />
+            {kpi.label}
+          </button>
+        );
+      })}
     </div>
   );
 
@@ -1393,6 +1544,7 @@ function BidTimelineChart({
             <span className="bid-timeline-modal-sub">{row.campaign}</span>
           </div>
           {toolbar}
+          {kpiChips}
           {chartBody}
         </div>
       </div>
@@ -1402,6 +1554,7 @@ function BidTimelineChart({
   return (
     <>
       {toolbar}
+      {kpiChips}
       {chartBody}
     </>
   );
@@ -1439,9 +1592,110 @@ function verdictLabel(v: TimelineKpiVerdict["verdict"]): {
       return { text: "Not reduced", cls: "bad", icon: "✗" };
     case "not_increased":
       return { text: "Not increased", cls: "bad", icon: "✗" };
+    case "no_activity":
+      return { text: "No activity in window", cls: "mute", icon: "·" };
     case "no_data":
       return { text: "No data", cls: "mute", icon: "·" };
   }
+}
+
+function formatBidChangeInline(
+  bc: TimelineKpiVerdict["bidChange"],
+): string | null {
+  if (!bc) return null;
+  const from = bc.fromBid != null ? money2(bc.fromBid) : "—";
+  const to = bc.toBid != null ? money2(bc.toBid) : "—";
+  const pct =
+    bc.changePct != null
+      ? ` (${bc.changePct >= 0 ? "+" : ""}${(bc.changePct * 100).toFixed(0)}%)`
+      : "";
+  const extra = bc.extraChanges > 0 ? ` (+${bc.extraChanges} more)` : "";
+  return `${from} → ${to}${pct}${extra}`;
+}
+
+function fmtIsoShort(iso: string | null): string {
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-");
+  if (!y || !m || !d) return iso;
+  const dt = new Date(Date.UTC(+y, +m - 1, +d));
+  return dt.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function ImpactRow({ impact }: { impact: BeforeAfterImpact }) {
+  const preRange =
+    impact.preStartIso && impact.preEndIso
+      ? `${fmtIsoShort(impact.preStartIso)} – ${fmtIsoShort(impact.preEndIso)}`
+      : "";
+  const postRange =
+    impact.postStartIso && impact.postEndIso
+      ? `${fmtIsoShort(impact.postStartIso)} – ${fmtIsoShort(impact.postEndIso)}`
+      : "";
+  const changeDate = fmtIsoShort(impact.changeDateIso);
+  const badgeCls =
+    impact.label === "Helped"
+      ? "helped"
+      : impact.label === "Hurt"
+        ? "hurt"
+        : impact.label === "Inconclusive"
+          ? "inconclusive"
+          : "nodata";
+  return (
+    <>
+      <div className="why-row">
+        <span className="why-lbl">IMPACT</span>
+        <div className="why-impact">
+          <span className="why-impact-block">
+            <span className="why-impact-val">
+              {impact.preAcos != null ? percent(impact.preAcos) : "—"}
+            </span>
+            <span className="why-impact-sub">
+              ACoS · {impact.preDays}d before
+            </span>
+            {preRange && <span className="why-impact-range">{preRange}</span>}
+          </span>
+          <span className="why-impact-arr">→</span>
+          <span className="why-impact-block">
+            <span className="why-impact-val">
+              {impact.postAcos != null ? percent(impact.postAcos) : "—"}
+            </span>
+            <span className="why-impact-sub">
+              ACoS · {impact.postDays}d after
+            </span>
+            {postRange && impact.postDays > 0 && (
+              <span className="why-impact-range">{postRange}</span>
+            )}
+          </span>
+          <span className="why-impact-block">
+            <span className="why-impact-val">{money2(impact.preSales)}</span>
+            <span className="why-impact-sub">sales before</span>
+          </span>
+          <span className="why-impact-arr">→</span>
+          <span className="why-impact-block">
+            <span className="why-impact-val">{money2(impact.postSales)}</span>
+            <span className="why-impact-sub">
+              sales after{impact.status === "Incomplete window" ? " *" : ""}
+            </span>
+          </span>
+          <span className={`why-impact-badge ${badgeCls}`}>{impact.label}</span>
+        </div>
+      </div>
+      <div className="why-impact-note-row">
+        <span className="why-lbl"></span>
+        <span className="why-impact-note">
+          Window anchored on bid change on <strong>{changeDate}</strong>.{" "}
+          {impact.postDays === 0
+            ? "Bid changed today — no after-data yet. Check back tomorrow."
+            : impact.status === "Incomplete window"
+              ? "* Pre or post window has fewer days than ideal. Verdict may shift as more data collects."
+              : "Full before/after window comparison."}
+        </span>
+      </div>
+    </>
+  );
 }
 
 function TimelineSection({ timeline }: { timeline: TimelineEntry[] }) {
@@ -1473,12 +1727,21 @@ function TimelineSection({ timeline }: { timeline: TimelineEntry[] }) {
             <div className="why-timeline-kpis">
               {entry.perKpi.map((kv) => {
                 const v = verdictLabel(kv.verdict);
+                const valueText =
+                  kv.rolling7Value != null
+                    ? formatKpiValue(kv.kpi, kv.rolling7Value)
+                    : kv.zeroSalesWithSpend
+                      ? "— (0 sales in window)"
+                      : kv.noActivity
+                        ? "—"
+                        : "—";
                 const cmp =
                   kv.worseThanThreshold == null
                     ? ""
                     : kv.worseThanThreshold
                       ? ` (worse than ${formatKpiValue(kv.kpi, kv.threshold)})`
                       : ` (better than ${formatKpiValue(kv.kpi, kv.threshold)})`;
+                const bidInline = formatBidChangeInline(kv.bidChange);
                 const bidNote =
                   kv.bidDirection === null
                     ? "no bid change"
@@ -1486,10 +1749,13 @@ function TimelineSection({ timeline }: { timeline: TimelineEntry[] }) {
                 return (
                   <span key={kv.kpi} className={`why-timeline-kpi ${v.cls}`}>
                     <strong>
-                      {KPI_LABEL[kv.kpi]}{" "}
-                      {formatKpiValue(kv.kpi, kv.rolling7Value)}
+                      {KPI_LABEL[kv.kpi]} {valueText}
                     </strong>
-                    {cmp} · {bidNote} →{" "}
+                    {cmp} · {bidNote}
+                    {bidInline && (
+                      <span className="why-timeline-bid">{bidInline}</span>
+                    )}{" "}
+                    →{" "}
                     <em>
                       {v.icon} {v.text}
                     </em>
@@ -1585,59 +1851,7 @@ function WhyCard({
         </div>
       )}
       {row.impact.status !== "No bid change" && (
-        <div className="why-row">
-          <span className="why-lbl">IMPACT</span>
-          <div className="why-impact">
-            <span className="why-impact-block">
-              <span className="why-impact-val">
-                {row.impact.preAcos != null ? percent(row.impact.preAcos) : "—"}
-              </span>
-              <span className="why-impact-sub">
-                ACoS · {row.impact.preDays}d before
-              </span>
-            </span>
-            <span className="why-impact-arr">→</span>
-            <span className="why-impact-block">
-              <span className="why-impact-val">
-                {row.impact.postAcos != null
-                  ? percent(row.impact.postAcos)
-                  : "—"}
-              </span>
-              <span className="why-impact-sub">
-                ACoS · {row.impact.postDays}d after
-              </span>
-            </span>
-            <span className="why-impact-block">
-              <span className="why-impact-val">
-                {money2(row.impact.preSales)}
-              </span>
-              <span className="why-impact-sub">sales before</span>
-            </span>
-            <span className="why-impact-arr">→</span>
-            <span className="why-impact-block">
-              <span className="why-impact-val">
-                {money2(row.impact.postSales)}
-              </span>
-              <span className="why-impact-sub">
-                sales after
-                {row.impact.status === "Incomplete window" ? " *" : ""}
-              </span>
-            </span>
-            <span
-              className={`why-impact-badge ${
-                row.impact.label === "Helped"
-                  ? "helped"
-                  : row.impact.label === "Hurt"
-                    ? "hurt"
-                    : row.impact.label === "Inconclusive"
-                      ? "inconclusive"
-                      : "nodata"
-              }`}
-            >
-              {row.impact.label}
-            </span>
-          </div>
-        </div>
+        <ImpactRow impact={row.impact} />
       )}
       <div className="why-row">
         <span className="why-lbl">DO THIS</span>
@@ -1989,8 +2203,21 @@ function AllTargets({
   targetAcos?: number;
 }) {
   const [filter, setFilter] = useState("all");
-  const active = ALL_FILTERS.find((f) => f.id === filter) ?? ALL_FILTERS[0];
-  const rows = result.auditRows.filter(active.test);
+  // Compute counts ONCE per audit-rows change — was O(filters × rows) per render.
+  const counts = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const f of ALL_FILTERS) {
+      let n = 0;
+      for (const r of result.auditRows) if (f.test(r)) n++;
+      out[f.id] = n;
+    }
+    return out;
+  }, [result.auditRows]);
+  // Memoize the filtered row list so ActionTable's downstream memo doesn't bust.
+  const rows = useMemo(() => {
+    const active = ALL_FILTERS.find((f) => f.id === filter) ?? ALL_FILTERS[0];
+    return result.auditRows.filter(active.test);
+  }, [result.auditRows, filter]);
   return (
     <section className="panel full">
       <div className="panel-header">
@@ -2013,18 +2240,15 @@ function AllTargets({
         </div>
       </div>
       <div className="filter-chips">
-        {ALL_FILTERS.map((f) => {
-          const n = result.auditRows.filter(f.test).length;
-          return (
-            <button
-              key={f.id}
-              className={`fchip${filter === f.id ? " active" : ""}`}
-              onClick={() => setFilter(f.id)}
-            >
-              {f.label} <em>{number(n)}</em>
-            </button>
-          );
-        })}
+        {ALL_FILTERS.map((f) => (
+          <button
+            key={f.id}
+            className={`fchip${filter === f.id ? " active" : ""}`}
+            onClick={() => setFilter(f.id)}
+          >
+            {f.label} <em>{number(counts[f.id])}</em>
+          </button>
+        ))}
       </div>
       <ActionTable
         rows={rows}
@@ -2142,6 +2366,9 @@ function gradeFor(score: number) {
   return { label: "Poor", tone: "bad" };
 }
 
+const PAGE_SIZE = 100;
+const COMPACT_LIMIT = 18;
+
 function ActionTable({
   rows,
   compact = false,
@@ -2160,18 +2387,44 @@ function ActionTable({
     "priorityScore" | "spend" | "sales" | "acos" | "bidChanges"
   >("priorityScore");
   const [openRow, setOpenRow] = useState<string | null>(null);
+  const [pageCount, setPageCount] = useState(1);
+
+  // Memoize the category dropdown options — was O(rows) on every render.
+  const categoryOptions = useMemo(
+    () => unique(rows.map((row) => row.category)),
+    [rows],
+  );
+
+  // Reset pagination when filters/sort/rows change so we always show top-N first.
+  const filterSig = `${category}|${priority}|${sort}|${search.trim().toLowerCase()}`;
+  const lastSigRef = useRef(filterSig);
+  if (lastSigRef.current !== filterSig) {
+    lastSigRef.current = filterSig;
+    if (pageCount !== 1) setPageCount(1);
+  }
 
   const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
     return rows
       .filter((row) => category === "All" || row.category === category)
       .filter((row) => priority === "All" || row.priority === priority)
       .filter((row) => {
+        if (!needle) return true;
         const haystack =
           `${row.campaign} ${row.adGroup} ${row.targeting} ${row.reason}`.toLowerCase();
-        return haystack.includes(search.toLowerCase());
+        return haystack.includes(needle);
       })
       .sort((a, b) => Number(b[sort] ?? 0) - Number(a[sort] ?? 0));
   }, [category, priority, rows, search, sort]);
+
+  // Pagination — cap visible rows to avoid rendering thousands of <tr> cells at once.
+  const visibleCount = compact
+    ? COMPACT_LIMIT
+    : Math.min(filtered.length, PAGE_SIZE * pageCount);
+  const visibleRows = useMemo(
+    () => filtered.slice(0, visibleCount),
+    [filtered, visibleCount],
+  );
 
   return (
     <div>
@@ -2192,7 +2445,7 @@ function ActionTable({
               onChange={(event) => setCategory(event.target.value)}
             >
               <option>All</option>
-              {unique(rows.map((row) => row.category)).map((item) => (
+              {categoryOptions.map((item) => (
                 <option key={item}>{item}</option>
               ))}
             </select>
@@ -2246,12 +2499,12 @@ function ActionTable({
             </tr>
           </thead>
           <tbody>
-            {filtered.slice(0, compact ? 18 : 500).map((row) => {
+            {visibleRows.map((row) => {
               const rowKey = `${row.campaign}-${row.adGroup}-${row.targeting}-${row.matchType}`;
               const isOpen = openRow === rowKey;
               return (
                 <Fragment key={rowKey}>
-                  <tr className={isOpen ? "row-open" : undefined}>
+                  <tr className={`audit-row${isOpen ? " row-open" : ""}`}>
                     <td>
                       <Badge tone={priorityTone(row.priority)}>
                         {row.priority}
@@ -2318,6 +2571,27 @@ function ActionTable({
           </tbody>
         </table>
       </div>
+      {!compact && filtered.length > visibleCount && (
+        <div className="table-pager">
+          <span className="table-pager-info">
+            Showing {number(visibleCount)} of {number(filtered.length)} targets
+          </span>
+          <button
+            type="button"
+            className="button ghost"
+            onClick={() => setPageCount((p) => p + 1)}
+          >
+            Load next {Math.min(PAGE_SIZE, filtered.length - visibleCount)}
+          </button>
+          <button
+            type="button"
+            className="button ghost"
+            onClick={() => setPageCount(Math.ceil(filtered.length / PAGE_SIZE))}
+          >
+            Load all
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -614,6 +614,24 @@ h3 {
   background: #ffffff;
 }
 
+/* Browser skips paint for off-screen rows. Big perf win for long lists. */
+.audit-row {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 56px;
+}
+
+.table-pager {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.table-pager-info {
+  margin-right: auto;
+}
+
 .audit-table th,
 .audit-table td {
   border-bottom: 1px solid var(--line);
@@ -1814,6 +1832,40 @@ tr.why-detail td {
   padding: 6px 0;
   font-size: 11.5px;
 }
+
+.bid-timeline-kpi-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0 6px;
+}
+.kpi-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+.kpi-chip:hover {
+  background: var(--surface-2);
+}
+.kpi-chip.on {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+}
+.kpi-chip-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
 .bid-timeline-toolbar-left {
   display: flex;
   flex-wrap: wrap;
@@ -1911,12 +1963,42 @@ tr.why-detail td {
   }
 }
 
-/* Fix 2: constrain WhyCard inside All Targets td so it doesn't span full row width */
+/* WhyCard inside All Targets td: fill the full row width, transparent backdrop. */
 tr.why-detail td .why-card {
-  max-width: 860px;
+  max-width: none;
   background: transparent;
   border-top: none;
   padding: 8px 0;
+}
+
+/* Two-column layout when viewport is wide enough. */
+@media (min-width: 1200px) {
+  tr.why-detail td .why-card {
+    display: grid;
+    grid-template-columns: minmax(0, 60fr) minmax(0, 40fr);
+    column-gap: 24px;
+    row-gap: 6px;
+    align-items: start;
+  }
+  /* Left column (WHAT / NUMBERS / BID MOVE / DO THIS) */
+  tr.why-detail td .why-card > .why-row:nth-child(1),
+  tr.why-detail td .why-card > .why-row:nth-child(2),
+  tr.why-detail td .why-card > .why-row:has(.why-bid),
+  tr.why-detail td .why-card > .why-row:has(.why-do-this) {
+    grid-column: 1;
+  }
+  /* Right column (IMPACT row + its note, TIMELINE) */
+  tr.why-detail td .why-card > .why-row:has(.why-impact),
+  tr.why-detail td .why-card > .why-impact-note-row,
+  tr.why-detail td .why-card > .why-timeline {
+    grid-column: 2;
+  }
+  /* Buttons + extras span both columns */
+  tr.why-detail td .why-card > .why-more-btn,
+  tr.why-detail td .why-card > .why-detail-extra,
+  tr.why-detail td .why-card > .why-timeline-section {
+    grid-column: 1 / -1;
+  }
 }
 
 /* let content elements in .why-row fill remaining space without overflow */
@@ -2105,6 +2187,13 @@ tr.why-detail td .why-card {
   color: var(--muted);
   font-style: normal;
 }
+.why-timeline-bid {
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  margin: 0 4px;
+  white-space: nowrap;
+}
 
 /* ── WhyCard IMPACT row ───────────────────────────────────────── */
 .why-impact {
@@ -2135,6 +2224,32 @@ tr.why-detail td .why-card {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.why-impact-range {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-style: italic;
+  margin-top: 1px;
+}
+.why-impact-note-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  padding-left: 0;
+  margin-top: -2px;
+}
+.why-impact-note {
+  flex: 1;
+  color: var(--muted);
+  font-style: italic;
+  padding-top: 2px;
+}
+.why-impact-note strong {
+  color: var(--ink);
+  font-style: normal;
 }
 .why-impact-arr {
   font-size: 16px;

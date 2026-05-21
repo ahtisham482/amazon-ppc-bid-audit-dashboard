@@ -144,6 +144,16 @@ export interface BeforeAfterImpact {
   postAcos: number | null;
   preDays: number;
   postDays: number;
+  /** Actual ISO yyyy-mm-dd date of the bid change this window is anchored on. */
+  changeDateIso: string | null;
+  /** Pre-window start date ISO yyyy-mm-dd. */
+  preStartIso: string | null;
+  /** Pre-window end date ISO yyyy-mm-dd. */
+  preEndIso: string | null;
+  /** Post-window start date ISO yyyy-mm-dd. */
+  postStartIso: string | null;
+  /** Post-window end date ISO yyyy-mm-dd. */
+  postEndIso: string | null;
 }
 
 /** Plain-English explanation attached to every audited target. */
@@ -190,12 +200,25 @@ export interface TimelineKpiVerdict {
   worseThanThreshold: boolean | null;
   /** Direction of any bid change in the rolling window. null = no change. */
   bidDirection: "increased" | "reduced" | null;
+  /** Most-recent bid change in the rolling window (null when no change). */
+  bidChange: {
+    fromBid: number | null;
+    toBid: number | null;
+    changePct: number | null;
+    /** Number of additional bid changes in the same window (0 means this was the only one). */
+    extraChanges: number;
+  } | null;
+  /** True when KPI value is undefined due to zero denominator AND there was spend/clicks/imps (i.e. activity but the metric is undefined). */
+  zeroSalesWithSpend?: boolean;
+  /** True when no activity at all in the rolling window. */
+  noActivity?: boolean;
   /** Final verdict for this KPI on this date. */
   verdict:
     | "acted_correctly"
     | "wrong_direction"
     | "not_reduced"
     | "not_increased"
+    | "no_activity"
     | "no_data";
 }
 
