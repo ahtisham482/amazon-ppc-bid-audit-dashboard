@@ -1194,6 +1194,9 @@ function BidTimelineChart({
         cvr,
         roas,
         cpc,
+        // Invisible hover anchor — guarantees every date is a tooltip target,
+        // including dates that have a bid change but no performance data.
+        __hover: 0,
       };
     });
     const tickInterval =
@@ -1301,6 +1304,8 @@ function BidTimelineChart({
           {visibleAxes.size === 0 && (
             <YAxis yAxisId="money" orientation="left" hide />
           )}
+          {/* Hidden axis backing the invisible hover-anchor line — always present */}
+          <YAxis yAxisId="hover" orientation="left" hide domain={[0, 1]} />
 
           {/* Target ACoS dashed horizontal reference (only when ACoS visible) */}
           {visible.has("acos") && (
@@ -1367,17 +1372,23 @@ function BidTimelineChart({
               >;
               const dateKey = pt.dateKey as string;
               const label = pt.label as string;
+              // Exact match first — only fall back to neighbouring dates if no exact bid change exists on this day.
+              const bcExact = bidChangeMap.get(dateKey);
               const bc =
-                bidChangeMap.get(dateKey) ||
+                bcExact ||
                 bidChangeMap.get(
                   allDateKeys[allDateKeys.indexOf(dateKey) - 1] ?? "",
                 ) ||
                 bidChangeMap.get(
                   allDateKeys[allDateKeys.indexOf(dateKey) + 1] ?? "",
                 );
+              const hasKpiValues = [...visible].some((id) => {
+                const v = pt[id];
+                return typeof v === "number" && v != null;
+              });
               return (
                 <div className="scatter-tooltip">
-                  <strong>{label}</strong>
+                  <strong>{bcExact ? `Bid change · ${label}` : label}</strong>
                   {[...visible].map((id) => {
                     const kpi = KPI_BY_ID.get(id);
                     const val = pt[id];
@@ -1389,6 +1400,11 @@ function BidTimelineChart({
                       </div>
                     );
                   })}
+                  {!hasKpiValues && (
+                    <div style={{ fontSize: 11, color: "#64748b" }}>
+                      No performance data on this day.
+                    </div>
+                  )}
                   {bc?.toBid != null && (
                     <>
                       <div
@@ -1425,6 +1441,20 @@ function BidTimelineChart({
             }}
           />
 
+          {/* Invisible hover anchor — guarantees every date is a tooltip target,
+              including bid-change dates with zero KPI activity */}
+          <Line
+            yAxisId="hover"
+            type="monotone"
+            dataKey="__hover"
+            stroke="transparent"
+            strokeOpacity={0}
+            dot={false}
+            activeDot={false}
+            isAnimationActive={false}
+            legendType="none"
+            connectNulls
+          />
           {/* Dynamically render lines for selected KPIs only */}
           {[...visible].map((id) => {
             const kpi = KPI_BY_ID.get(id);
