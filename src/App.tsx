@@ -373,7 +373,9 @@ export default function App() {
           {sections.map(({ id, icon: Icon }) => (
             <button
               key={id}
+              type="button"
               className={activeSection === id ? "nav-item active" : "nav-item"}
+              aria-current={activeSection === id ? "page" : undefined}
               onClick={() => setActiveSection(id)}
             >
               <Icon size={18} />
@@ -587,18 +589,17 @@ function FileDrop({
     inputRef.current?.click();
   }
 
+  // F11: render as <label> so the only tab-stop is the <input type="file">.
+  // The visible "Choose/Replace" button is decorative (tabIndex=-1) but still
+  // clickable for mouse users.
+  const stateText = busy
+    ? "Reading file…"
+    : info
+      ? `✓ ${info.name} · ${info.rows.toLocaleString()} rows`
+      : `${description} — click or drop`;
   return (
-    <div
+    <label
       className={`file-drop${dragOver ? " drag-over" : ""}${info ? " has-file" : ""}`}
-      role="button"
-      tabIndex={0}
-      onClick={pick}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          pick();
-        }
-      }}
       onDragOver={(event) => {
         event.preventDefault();
         setDragOver(true);
@@ -614,6 +615,7 @@ function FileDrop({
         ref={inputRef}
         type="file"
         accept=".csv,.xlsx,.xls,.xlsm,.xlsb,.txt"
+        aria-label={`${title} — ${stateText}`}
         onChange={(event) => {
           onFile(event.target.files?.[0] ?? null, slot);
           event.target.value = "";
@@ -629,25 +631,12 @@ function FileDrop({
             </em>
           )}
         </strong>
-        <small>
-          {busy
-            ? "Reading file…"
-            : info
-              ? `✓ ${info.name} · ${info.rows.toLocaleString()} rows`
-              : `${description} — click or drop`}
-        </small>
+        <small>{stateText}</small>
       </span>
-      <button
-        type="button"
-        className="file-drop-btn"
-        onClick={(event) => {
-          event.stopPropagation();
-          pick();
-        }}
-      >
+      <span className="file-drop-btn" aria-hidden="true">
         {info ? "Replace" : "Choose"}
-      </button>
-    </div>
+      </span>
+    </label>
   );
 }
 
@@ -676,9 +665,11 @@ function ThresholdPanel({
           Target ACoS (%)
           <input
             type="number"
+            aria-label="Target ACoS percentage"
             value={Math.round(thresholds.targetAcos * 100)}
             min={1}
             max={200}
+            step={1}
             onChange={(event) =>
               setField("targetAcos", Number(event.target.value) / 100)
             }
@@ -688,8 +679,10 @@ function ThresholdPanel({
           Min clicks
           <input
             type="number"
+            aria-label="Minimum clicks before judging"
             value={thresholds.minClicks}
             min={0}
+            step={1}
             onChange={(event) =>
               setField("minClicks", Number(event.target.value))
             }
@@ -699,8 +692,10 @@ function ThresholdPanel({
           Min spend ($)
           <input
             type="number"
+            aria-label="Minimum spend in dollars before judging"
             value={thresholds.minSpend}
             min={0}
+            step={1}
             onChange={(event) =>
               setField("minSpend", Number(event.target.value))
             }
@@ -710,8 +705,10 @@ function ThresholdPanel({
           Min orders
           <input
             type="number"
+            aria-label="Minimum orders before judging"
             value={thresholds.minOrders}
             min={0}
+            step={1}
             onChange={(event) =>
               setField("minOrders", Number(event.target.value))
             }
@@ -721,9 +718,11 @@ function ThresholdPanel({
           Lookback (days)
           <input
             type="number"
+            aria-label="Lookback window in days"
             value={thresholds.lookbackDays}
             min={3}
             max={30}
+            step={1}
             onChange={(event) =>
               setField("lookbackDays", Number(event.target.value))
             }
@@ -3215,6 +3214,8 @@ function ActionTable({
           <label className="search-box">
             <Search size={16} />
             <input
+              type="search"
+              aria-label="Search campaign, target, or reason"
               placeholder="Search campaign, target, reason"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -3222,7 +3223,9 @@ function ActionTable({
           </label>
           <label>
             <Filter size={15} />
+            <span className="visually-hidden">Category</span>
             <select
+              aria-label="Filter by category"
               value={category}
               onChange={(event) => setCategory(event.target.value)}
             >
@@ -3235,6 +3238,7 @@ function ActionTable({
           <label>
             Priority
             <select
+              aria-label="Filter by priority"
               value={priority}
               onChange={(event) => setPriority(event.target.value)}
             >
@@ -3249,6 +3253,7 @@ function ActionTable({
           <label>
             Sort
             <select
+              aria-label="Sort by"
               value={sort}
               onChange={(event) => setSort(event.target.value as typeof sort)}
             >
@@ -3789,6 +3794,8 @@ function ProductsView({
           <label className="search-box">
             <Search size={14} />
             <input
+              type="search"
+              aria-label="Search product"
               placeholder="Search product"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -3797,6 +3804,7 @@ function ProductsView({
           <label>
             Status
             <select
+              aria-label="Filter products by status"
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
             >

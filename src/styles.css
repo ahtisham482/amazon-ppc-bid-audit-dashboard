@@ -34,6 +34,35 @@
   box-sizing: border-box;
 }
 
+/* F9: visually-hidden helper for accessible labels */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* F8: global focus ring — keyboard-visible across all surfaces */
+:focus-visible {
+  outline: 2px solid var(--blue, #2563eb);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* Inset variant for dark / filled pills so the ring stays visible */
+.fchip:focus-visible,
+.fchip-tag:focus-visible,
+.bdc-kpi-chip:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 2px #ffffff,
+    0 0 0 2px var(--blue, #2563eb);
+}
+
 body {
   margin: 0;
   background: var(--bg);
@@ -281,8 +310,23 @@ h3 {
   background: rgba(15, 118, 110, 0.05);
 }
 
-.file-drop input {
-  display: none;
+/* F11: hide the file input visually but keep it focusable so the <label>
+   wrapper is the single tab-stop for the whole card. */
+.file-drop input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* Focus indicator wraps the visible card when the hidden input is focused. */
+.file-drop:focus-within {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.18);
 }
 
 .file-drop svg {
