@@ -1600,7 +1600,7 @@ function summarize(
     good: goodJudged,
     issues: issuesJudged,
     setAside,
-    formula: `${goodJudged} of ${judged} gradeable targets look correctly managed → ${decisionScore}/100. ${setAside} targets were set aside (no bid-history match or not enough data) and were not graded.`,
+    formula: `${goodJudged.toLocaleString("en-US")} of ${judged.toLocaleString("en-US")} gradeable targets look correctly managed → ${decisionScore}/100. ${setAside.toLocaleString("en-US")} targets were set aside (no bid-history match or not enough data) and were not graded.`,
   };
 
   return {

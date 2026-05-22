@@ -3298,6 +3298,36 @@ tr.why-detail td {
   margin: 0;
 }
 
+/* G4: invalid-threshold inline red text */
+.threshold-field {
+  position: relative;
+}
+.threshold-field.invalid input {
+  border-color: var(--red, #dc2626);
+  background: var(--red-soft, #fee2e2);
+}
+.threshold-field.invalid input:focus-visible {
+  outline-color: var(--red, #dc2626);
+}
+.threshold-error {
+  display: block;
+  margin-top: 4px;
+  color: var(--red, #dc2626);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* G6: SB chart placeholder (no daily data) */
+.bdc-chart-placeholder {
+  padding: 10px 14px;
+  font-size: 12.5px;
+  color: var(--muted, #64748b);
+  font-style: italic;
+  border-top: 1px solid var(--bdc-line, #e5e7eb);
+  background: var(--bdc-surface-2, #f9fafb);
+  text-align: center;
+}
+
 /* ─── CHART TOGGLE ────────────────────────────────────────────── */
 .bdc-chart-toggle {
   border-top: 1px solid var(--bdc-line);

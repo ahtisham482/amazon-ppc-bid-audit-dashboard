@@ -184,6 +184,58 @@ function isCustomThresholds(t: Thresholds): boolean {
   );
 }
 
+// G4: per-field validity check. Returns "" when valid, else a Sarah-friendly
+// error string. Used both for the inline red text under the input and to
+// gate the Analyze button.
+type ThresholdField =
+  | "targetAcos"
+  | "minClicks"
+  | "minSpend"
+  | "minOrders"
+  | "lookbackDays";
+
+function thresholdFieldError(field: ThresholdField, t: Thresholds): string {
+  switch (field) {
+    case "targetAcos": {
+      const pct = Math.round(t.targetAcos * 100);
+      if (!Number.isFinite(pct) || pct < 1 || pct > 200)
+        return "Target ACoS must be between 1% and 200%.";
+      return "";
+    }
+    case "minClicks":
+      if (!Number.isFinite(t.minClicks) || t.minClicks < 0)
+        return "Min clicks must be 0 or higher.";
+      return "";
+    case "minSpend":
+      if (!Number.isFinite(t.minSpend) || t.minSpend < 0)
+        return "Min spend must be 0 or higher.";
+      return "";
+    case "minOrders":
+      if (!Number.isFinite(t.minOrders) || t.minOrders < 0)
+        return "Min orders must be 0 or higher.";
+      return "";
+    case "lookbackDays":
+      if (
+        !Number.isFinite(t.lookbackDays) ||
+        t.lookbackDays < 3 ||
+        t.lookbackDays > 30
+      )
+        return "Lookback must be between 3 and 30 days.";
+      return "";
+  }
+}
+
+function hasInvalidThresholds(t: Thresholds): boolean {
+  const fields: ThresholdField[] = [
+    "targetAcos",
+    "minClicks",
+    "minSpend",
+    "minOrders",
+    "lookbackDays",
+  ];
+  return fields.some((f) => thresholdFieldError(f, t) !== "");
+}
+
 export default function App() {
   const [historyRaw, setHistoryRaw] = useState<
     Record<string, unknown>[] | null
@@ -403,7 +455,17 @@ export default function App() {
             <button
               className="button primary"
               onClick={runAnalysis}
-              disabled={isLoading || !historyRaw || !targetingRaw}
+              disabled={
+                isLoading ||
+                !historyRaw ||
+                !targetingRaw ||
+                hasInvalidThresholds(thresholds)
+              }
+              title={
+                hasInvalidThresholds(thresholds)
+                  ? "Fix invalid threshold values to enable Analyze"
+                  : undefined
+              }
             >
               {isLoading ? (
                 <RefreshCw className="spin" size={17} />
@@ -640,6 +702,50 @@ function FileDrop({
   );
 }
 
+// G4: shared threshold-input row with inline red error when invalid
+function ThresholdField({
+  label,
+  ariaLabel,
+  value,
+  min,
+  max,
+  error,
+  onChange,
+}: {
+  label: string;
+  ariaLabel: string;
+  value: number;
+  min: number;
+  max?: number;
+  error: string;
+  onChange: (v: number) => void;
+}) {
+  const invalid = error !== "";
+  const id = `tf-${ariaLabel.replace(/\s+/g, "-").toLowerCase()}`;
+  return (
+    <label className={invalid ? "threshold-field invalid" : "threshold-field"}>
+      {label}
+      <input
+        id={id}
+        type="number"
+        aria-label={ariaLabel}
+        aria-invalid={invalid || undefined}
+        aria-describedby={invalid ? `${id}-err` : undefined}
+        value={value}
+        min={min}
+        max={max}
+        step={1}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+      {invalid && (
+        <small id={`${id}-err`} className="threshold-error" role="alert">
+          {error}
+        </small>
+      )}
+    </label>
+  );
+}
+
 function ThresholdPanel({
   thresholds,
   onChange,
@@ -661,73 +767,48 @@ function ThresholdPanel({
         <strong>Thresholds</strong>
       </div>
       <div className="threshold-grid">
-        <label>
-          Target ACoS (%)
-          <input
-            type="number"
-            aria-label="Target ACoS percentage"
-            value={Math.round(thresholds.targetAcos * 100)}
-            min={1}
-            max={200}
-            step={1}
-            onChange={(event) =>
-              setField("targetAcos", Number(event.target.value) / 100)
-            }
-          />
-        </label>
-        <label>
-          Min clicks
-          <input
-            type="number"
-            aria-label="Minimum clicks before judging"
-            value={thresholds.minClicks}
-            min={0}
-            step={1}
-            onChange={(event) =>
-              setField("minClicks", Number(event.target.value))
-            }
-          />
-        </label>
-        <label>
-          Min spend ($)
-          <input
-            type="number"
-            aria-label="Minimum spend in dollars before judging"
-            value={thresholds.minSpend}
-            min={0}
-            step={1}
-            onChange={(event) =>
-              setField("minSpend", Number(event.target.value))
-            }
-          />
-        </label>
-        <label>
-          Min orders
-          <input
-            type="number"
-            aria-label="Minimum orders before judging"
-            value={thresholds.minOrders}
-            min={0}
-            step={1}
-            onChange={(event) =>
-              setField("minOrders", Number(event.target.value))
-            }
-          />
-        </label>
-        <label>
-          Lookback (days)
-          <input
-            type="number"
-            aria-label="Lookback window in days"
-            value={thresholds.lookbackDays}
-            min={3}
-            max={30}
-            step={1}
-            onChange={(event) =>
-              setField("lookbackDays", Number(event.target.value))
-            }
-          />
-        </label>
+        <ThresholdField
+          label="Target ACoS (%)"
+          ariaLabel="Target ACoS percentage"
+          value={Math.round(thresholds.targetAcos * 100)}
+          min={1}
+          max={200}
+          error={thresholdFieldError("targetAcos", thresholds)}
+          onChange={(v) => setField("targetAcos", v / 100)}
+        />
+        <ThresholdField
+          label="Min clicks"
+          ariaLabel="Minimum clicks before judging"
+          value={thresholds.minClicks}
+          min={0}
+          error={thresholdFieldError("minClicks", thresholds)}
+          onChange={(v) => setField("minClicks", v)}
+        />
+        <ThresholdField
+          label="Min spend ($)"
+          ariaLabel="Minimum spend in dollars before judging"
+          value={thresholds.minSpend}
+          min={0}
+          error={thresholdFieldError("minSpend", thresholds)}
+          onChange={(v) => setField("minSpend", v)}
+        />
+        <ThresholdField
+          label="Min orders"
+          ariaLabel="Minimum orders before judging"
+          value={thresholds.minOrders}
+          min={0}
+          error={thresholdFieldError("minOrders", thresholds)}
+          onChange={(v) => setField("minOrders", v)}
+        />
+        <ThresholdField
+          label="Lookback (days)"
+          ariaLabel="Lookback window in days"
+          value={thresholds.lookbackDays}
+          min={3}
+          max={30}
+          error={thresholdFieldError("lookbackDays", thresholds)}
+          onChange={(v) => setField("lookbackDays", v)}
+        />
       </div>
       <KpiSelector thresholds={thresholds} onChange={onChange} />
     </div>
@@ -2393,7 +2474,7 @@ function BidDecisionCard({
       </div>
 
       {/* CHART TOGGLE */}
-      {row.dailyRows.length >= 3 && (
+      {row.dailyRows.length >= 3 ? (
         <div className="bdc-chart-toggle">
           <button
             type="button"
@@ -2409,6 +2490,13 @@ function BidDecisionCard({
               <BidTimelineChart row={row} targetAcos={targetAcos} />
             </div>
           )}
+        </div>
+      ) : (
+        // G6: explain the chart's absence rather than silently dropping the section.
+        // SB cards never reach 3 daily rows because SB reports are summary-level.
+        <div className="bdc-chart-placeholder">
+          Bid timeline chart not available — Sponsored Brands reports are
+          summary-level (a date range, not daily).
         </div>
       )}
 
@@ -2824,7 +2912,7 @@ function ActionPlan({
             Start with the green column, then the red. Grey can wait. Click any
             keyword for the exact reason and numbers.{" "}
             <button className="linklike" onClick={() => onNavigate("Help")}>
-              How is this decided?
+              Read the rules ↗
             </button>
           </p>
         </div>
@@ -4399,7 +4487,9 @@ function SBView({ result }: { result: AnalysisResult }) {
             className="seg good"
             style={{ width: `${(b.good / total) * 100}%` }}
           >
-            {b.good > 0 && b.good / total >= 0.1 && `${b.good} managed well`}
+            {b.good > 0 &&
+              b.good / total >= 0.1 &&
+              `${number(b.good)} managed well`}
           </span>
           <span
             className="seg bad"
@@ -4407,7 +4497,7 @@ function SBView({ result }: { result: AnalysisResult }) {
           >
             {b.issues > 0 &&
               b.issues / total >= 0.1 &&
-              `${b.issues} with a problem`}
+              `${number(b.issues)} with a problem`}
           </span>
           <span
             className="seg muted"
@@ -4415,7 +4505,7 @@ function SBView({ result }: { result: AnalysisResult }) {
           >
             {b.setAside > 0 &&
               b.setAside / total >= 0.1 &&
-              `${b.setAside} set aside`}
+              `${number(b.setAside)} set aside`}
           </span>
         </div>
         <div className="story-narrative">
