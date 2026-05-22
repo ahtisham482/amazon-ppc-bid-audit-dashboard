@@ -1401,6 +1401,22 @@ tr.why-detail td {
 .settings-fold[open] > summary {
   border-bottom: 1px solid var(--line);
 }
+/* G3 + G2: persistence banner with Reset link */
+.threshold-restored {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  background: #f1f5f9;
+  font-size: 12.5px;
+  color: #475569;
+  border-bottom: 1px solid var(--line);
+}
+.threshold-restored .linklike {
+  color: #2563eb;
+  font-weight: 600;
+}
 .settings-fold .threshold-panel {
   border: 0;
 }
@@ -3157,6 +3173,22 @@ tr.why-detail td {
   font-size: 14px;
   flex-shrink: 0;
   margin-top: 1px;
+}
+
+/* ─── IMPACT EMPTY / PENDING (Ring-1 F2 + G17 + F16) ─────────── */
+.bdc-impact-empty,
+.bdc-impact-pending {
+  font-size: 13px;
+  color: var(--bdc-muted, #6b7280);
+  font-style: italic;
+  padding: 12px 16px;
+  background: var(--bdc-surface-2, #f9fafb);
+  border-radius: 6px;
+  line-height: 1.5;
+  text-align: center;
+}
+.bdc-impact-pending {
+  margin: 0;
 }
 
 /* ─── CHART TOGGLE ────────────────────────────────────────────── */

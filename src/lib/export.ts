@@ -1,5 +1,23 @@
 import { AuditRow, CampaignSummary, Summary } from "./types";
-import { dateShort } from "./format";
+import { RULES_VERSION, dateShort, decisionIdFromKey } from "./format";
+
+// CSV cell formatters — round at serialisation so exports never leak IEEE-754 tails.
+function money2(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "";
+  return Number(value).toFixed(2);
+}
+function ratio4(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "";
+  return Number(value).toFixed(4);
+}
+function acosPct(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "";
+  return `${(value * 100).toFixed(2)}%`;
+}
+function int(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "";
+  return String(Math.round(value));
+}
 
 function quote(value: unknown) {
   if (value === null || value === undefined) return "";
@@ -45,23 +63,25 @@ export function auditRowToExport(row: AuditRow): Record<string, unknown> {
     "Ad Group": row.adGroup,
     Targeting: row.targeting,
     "Match Type": row.matchType,
-    Spend: row.spend,
-    Sales: row.sales,
-    Orders: row.orders,
-    ACoS: row.acos != null ? `${(row.acos * 100).toFixed(2)}%` : "",
-    ROAS: row.roas,
-    Clicks: row.clicks,
-    CPC: row.cpc,
+    Spend: money2(row.spend),
+    Sales: money2(row.sales),
+    Orders: int(row.orders),
+    ACoS: acosPct(row.acos),
+    ROAS: ratio4(row.roas),
+    Clicks: int(row.clicks),
+    CPC: ratio4(row.cpc),
     CTR: row.ctr != null ? `${(row.ctr * 100).toFixed(2)}%` : "",
     CVR: row.cvr != null ? `${(row.cvr * 100).toFixed(2)}%` : "",
-    "Previous Bid": row.previousBid,
-    "Latest Bid": row.latestBid,
+    "Previous Bid": money2(row.previousBid),
+    "Latest Bid": money2(row.latestBid),
     "Bid Change %":
       row.bidChangePct != null ? `${(row.bidChangePct * 100).toFixed(1)}%` : "",
     "Last Bid Change": dateShort(row.lastBidChangeDate),
-    "Bid Changes": row.bidChanges,
+    "Bid Changes": int(row.bidChanges),
     "Match Level": row.matchLevel,
     "Before/After": row.impact.label,
+    "Decision ID": `dec_${decisionIdFromKey(row.exactKey)}`,
+    "Rules Version": RULES_VERSION,
   };
 }
 
@@ -70,18 +90,18 @@ export function campaignToExport(
 ): Record<string, unknown> {
   return {
     Campaign: row.campaign,
-    Spend: row.spend,
-    Sales: row.sales,
-    Orders: row.orders,
-    ACoS: row.acos,
-    Targets: row.targets,
-    "Issue Count": row.issueCount,
-    "Winners Not Scaled": row.winnersNotScaled,
-    "Losers Not Reduced": row.losersNotReduced,
-    "Wrong Bid Changes": row.wrongBidChanges,
-    "Too Many Bid Changes": row.tooManyBidChanges,
-    "Needs More Data": row.needsMoreData,
-    Unmatched: row.unmatched,
+    Spend: money2(row.spend),
+    Sales: money2(row.sales),
+    Orders: int(row.orders),
+    ACoS: acosPct(row.acos),
+    Targets: int(row.targets),
+    "Issue Count": int(row.issueCount),
+    "Winners Not Scaled": int(row.winnersNotScaled),
+    "Losers Not Reduced": int(row.losersNotReduced),
+    "Wrong Bid Changes": int(row.wrongBidChanges),
+    "Too Many Bid Changes": int(row.tooManyBidChanges),
+    "Needs More Data": int(row.needsMoreData),
+    Unmatched: int(row.unmatched),
   };
 }
 

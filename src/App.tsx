@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -65,7 +65,15 @@ import {
   UnmatchedReason,
 } from "./lib/types";
 import { parseCampaignName, matchTypeLabel } from "./lib/campaign-parser";
-import { dateShort, money, money2, number, percent } from "./lib/format";
+import {
+  RULES_VERSION,
+  dateShort,
+  decisionIdFromKey,
+  money,
+  money2,
+  number,
+  percent,
+} from "./lib/format";
 import {
   auditRowToExport,
   campaignToExport,
@@ -120,6 +128,62 @@ interface FileInfo {
   rows: number;
 }
 
+// ─── Threshold persistence (G3 + G2) ───────────────────────────────────────
+const THRESHOLD_STORAGE_KEY = "ppc-auditor:thresholds:v1";
+
+function hasStoredThresholds(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(THRESHOLD_STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
+function loadStoredThresholds(): Thresholds {
+  if (typeof window === "undefined") return defaultThresholds;
+  try {
+    const raw = window.localStorage.getItem(THRESHOLD_STORAGE_KEY);
+    if (!raw) return defaultThresholds;
+    const parsed = JSON.parse(raw);
+    // Defensive: merge over defaults so a future schema add doesn't break old saves.
+    return { ...defaultThresholds, ...parsed };
+  } catch {
+    return defaultThresholds;
+  }
+}
+
+function saveStoredThresholds(t: Thresholds) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(THRESHOLD_STORAGE_KEY, JSON.stringify(t));
+  } catch {
+    /* localStorage disabled — silently ignore */
+  }
+}
+
+function clearStoredThresholds() {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(THRESHOLD_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function isCustomThresholds(t: Thresholds): boolean {
+  return (
+    t.targetAcos !== defaultThresholds.targetAcos ||
+    t.minClicks !== defaultThresholds.minClicks ||
+    t.minSpend !== defaultThresholds.minSpend ||
+    t.minOrders !== defaultThresholds.minOrders ||
+    t.minSales !== defaultThresholds.minSales ||
+    t.lookbackDays !== defaultThresholds.lookbackDays ||
+    t.attributionDelayDays !== defaultThresholds.attributionDelayDays ||
+    t.mode !== defaultThresholds.mode
+  );
+}
+
 export default function App() {
   const [historyRaw, setHistoryRaw] = useState<
     Record<string, unknown>[] | null
@@ -135,7 +199,21 @@ export default function App() {
   const [sbInfo, setSbInfo] = useState<FileInfo | null>(null);
   const [bulkInfo, setBulkInfo] = useState<FileInfo | null>(null);
   const [acosInfo, setAcosInfo] = useState<FileInfo | null>(null);
-  const [thresholds, setThresholds] = useState<Thresholds>(defaultThresholds);
+  const [thresholds, setThresholds] = useState<Thresholds>(() =>
+    loadStoredThresholds(),
+  );
+  const [thresholdsRestored, setThresholdsRestored] = useState(() =>
+    hasStoredThresholds(),
+  );
+  // Persist threshold edits (debounced) so a refresh doesn't wipe customisations.
+  // Clears storage when values return to defaults so the banner doesn't lie on reload.
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      if (isCustomThresholds(thresholds)) saveStoredThresholds(thresholds);
+      else clearStoredThresholds();
+    }, 300);
+    return () => window.clearTimeout(id);
+  }, [thresholds]);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [activeSection, setActiveSection] = useState<Section>("Action Plan");
   const [isLoading, setIsLoading] = useState(false);
@@ -296,15 +374,6 @@ export default function App() {
             </p>
           </div>
           <div className="topbar-actions">
-            {result && (
-              <button
-                className="button ghost"
-                onClick={() => exportBundle(result)}
-              >
-                <Download size={17} />
-                Export audit
-              </button>
-            )}
             <button
               className="button primary"
               onClick={runAnalysis}
@@ -390,6 +459,26 @@ export default function App() {
               </p>
               <details className="settings-fold">
                 <summary>Adjust targets &amp; thresholds (optional)</summary>
+                {(thresholdsRestored || isCustomThresholds(thresholds)) && (
+                  <div className="threshold-restored">
+                    <span>
+                      {thresholdsRestored
+                        ? "Using your saved thresholds."
+                        : "Custom thresholds active."}
+                    </span>
+                    <button
+                      type="button"
+                      className="linklike"
+                      onClick={() => {
+                        clearStoredThresholds();
+                        setThresholds(defaultThresholds);
+                        setThresholdsRestored(false);
+                      }}
+                    >
+                      Reset to defaults
+                    </button>
+                  </div>
+                )}
                 <ThresholdPanel
                   thresholds={thresholds}
                   onChange={updateThresholds}
@@ -407,7 +496,7 @@ export default function App() {
         )}
 
         {!result ? (
-          <EmptyState />
+          <EmptyState ready={!!historyRaw && !!targetingRaw} />
         ) : (
           <Dashboard
             activeSection={activeSection}
@@ -720,12 +809,16 @@ function KpiSelector({
   );
 }
 
-function EmptyState() {
+function EmptyState({ ready = false }: { ready?: boolean }) {
   return (
     <section className="empty-state">
       <div className="empty-copy">
         <FileSpreadsheet size={42} />
-        <h2>Add boxes 1 &amp; 2, then click Analyze.</h2>
+        <h2>
+          {ready
+            ? "Ready when you are — click Analyze."
+            : "Add boxes 1 & 2, then click Analyze."}
+        </h2>
         <p>
           You&apos;ll get one simple screen: which keywords to{" "}
           <strong>push</strong>, <strong>hold</strong>, or <strong>cut</strong>{" "}
@@ -1842,14 +1935,7 @@ const CATEGORY_BADGE: Record<
   },
 };
 
-function decisionIdFromKey(key: string): string {
-  // Stable 6-char hash for the decision ID footer.
-  let h = 0;
-  for (let i = 0; i < key.length; i++) {
-    h = (h * 31 + key.charCodeAt(i)) >>> 0;
-  }
-  return h.toString(16).padStart(8, "0").slice(0, 6);
-}
+// decisionIdFromKey + RULES_VERSION moved to lib/format.ts so exports can reuse
 
 function buildSubheadline(row: AuditRow): string {
   const acosFmt = row.acos != null ? percent(row.acos) : null;
@@ -2077,7 +2163,9 @@ function BidDecisionCard({
         <div className="bdc-meta-cell">
           <div className="bdc-meta-label">Campaign</div>
           <div className="bdc-meta-value">{row.campaign}</div>
-          <div className="bdc-meta-sub">{row.adGroup}</div>
+          {row.adGroup && row.adGroup !== row.campaign && (
+            <div className="bdc-meta-sub">{row.adGroup}</div>
+          )}
         </div>
         <div className="bdc-meta-cell">
           <div className="bdc-meta-label">Target</div>
@@ -2256,7 +2344,8 @@ function BidDecisionCard({
       {/* FOOTER */}
       <div className="bdc-footer">
         <div className="bdc-footer-left">
-          Decision ID <code>dec_{decisionId}</code> · generated by Rules v4.2
+          Decision ID <code>dec_{decisionId}</code> · generated by Rules{" "}
+          {RULES_VERSION}
         </div>
         <div className="bdc-footer-right">
           <button
@@ -2394,6 +2483,24 @@ function BdcVerdictTimeline({
 }
 
 function BdcImpactSplit({ impact }: { impact: BeforeAfterImpact }) {
+  const preHasData =
+    impact.preDays > 0 &&
+    (impact.preAcos != null || impact.preSales > 0 || impact.preSpend > 0);
+  const postHasData =
+    impact.postDays > 0 &&
+    (impact.postAcos != null || impact.postSales > 0 || impact.postSpend > 0);
+
+  // Both sides empty → single muted message (covers SB cards and any case
+  // where Sponsored Brands summary-level data prevents before/after compute).
+  if (!preHasData && !postHasData) {
+    return (
+      <div className="bdc-impact-empty">
+        Impact comparison will appear once we have at least one day of
+        post-bid-change data.
+      </div>
+    );
+  }
+
   const preRange =
     impact.preStartIso && impact.preEndIso
       ? `${fmtIsoShort(impact.preStartIso)} – ${fmtIsoShort(impact.preEndIso)}`
@@ -2401,7 +2508,8 @@ function BdcImpactSplit({ impact }: { impact: BeforeAfterImpact }) {
   const postRange =
     impact.postStartIso && impact.postEndIso && impact.postDays > 0
       ? `${fmtIsoShort(impact.postStartIso)} – ${fmtIsoShort(impact.postEndIso)}`
-      : "(empty)";
+      : "";
+
   return (
     <div className="bdc-impact-split">
       <div className="bdc-impact-side">
@@ -2422,22 +2530,31 @@ function BdcImpactSplit({ impact }: { impact: BeforeAfterImpact }) {
       </div>
       <span className="bdc-impact-arr">→</span>
       <div className="bdc-impact-side">
-        <div className="bdc-impact-head">
-          <div>
-            {impact.postDays} day{impact.postDays !== 1 ? "s" : ""} after
+        {postHasData ? (
+          <>
+            <div className="bdc-impact-head">
+              <div>
+                {impact.postDays} day{impact.postDays !== 1 ? "s" : ""} after
+              </div>
+              <div className="bdc-impact-range">{postRange}</div>
+            </div>
+            <div className="bdc-impact-row">
+              <span>ACoS</span>
+              <strong>
+                {impact.postAcos != null ? percent(impact.postAcos) : "—"}
+              </strong>
+            </div>
+            <div className="bdc-impact-row">
+              <span>Sales</span>
+              <strong>{money2(impact.postSales)}</strong>
+            </div>
+          </>
+        ) : (
+          <div className="bdc-impact-pending">
+            After-data pending — check back once a day of activity follows the
+            bid change.
           </div>
-          <div className="bdc-impact-range">{postRange}</div>
-        </div>
-        <div className="bdc-impact-row">
-          <span>ACoS</span>
-          <strong>
-            {impact.postAcos != null ? percent(impact.postAcos) : "—"}
-          </strong>
-        </div>
-        <div className="bdc-impact-row">
-          <span>Sales</span>
-          <strong>{money2(impact.postSales)}</strong>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -2634,7 +2751,7 @@ function ActionPlan({
         </div>
         <button className="button ghost" onClick={() => onExport("actions")}>
           <Download size={16} />
-          Export action list
+          Download action list (CSV)
         </button>
       </section>
 
@@ -4340,6 +4457,4 @@ function handleExport(kind: string, result: AnalysisResult) {
   );
 }
 
-function exportBundle(result: AnalysisResult) {
-  handleExport("actions", result);
-}
+// exportBundle removed: was a duplicate of handleExport("actions") — see G11.

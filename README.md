@@ -49,6 +49,13 @@ The app follows the analyst handoff:
 - Medium no-match-type: campaign + ad group + target only.
 - Unmatched: kept visible in Data Quality.
 
+## Export Schema Notes
+
+- **Ad Group column:** the value is passed through literally from the Amazon source file. On campaigns where Amazon's report has `Campaign Name == Ad Group Name`, both CSV columns will show the same string. The BidDecisionCard UI suppresses the second line when they match; analysts who pivot the raw CSV will still see the literal source data.
+- **ACoS column:** formatted as a percent string (e.g. `29.98%`) consistently across all three exports (Action list, Full CSV, Campaign CSV).
+- **Decision ID + Rules Version:** present on every Action list / Full CSV row as the last two columns. Use these to trace a recommendation back to the rule that produced it.
+- **Numeric precision:** money rounded to 2 dp, ratios to 4 dp, integers exact. No IEEE-754 tails.
+
 ## Current Limitations
 
 - Sponsored Brands rows are isolated unless an SB performance report is added.
