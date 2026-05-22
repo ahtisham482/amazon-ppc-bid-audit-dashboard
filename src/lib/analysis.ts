@@ -1218,8 +1218,8 @@ function decide(input: {
       priorityScore: score,
       reason:
         row.orders === 0
-          ? `This target spent $${row.spend.toFixed(2)} with 0 orders and no meaningful bid reduction was found.`
-          : `This target has ${acosText}, above the waste threshold, and no meaningful bid reduction was found.`,
+          ? `This target spent $${row.spend.toFixed(2)} with 0 orders and the latest bid change was not a reduction.`
+          : `This target has ${acosText}, above the waste threshold, and the latest bid change was not a reduction.`,
     };
   }
 
@@ -1230,7 +1230,7 @@ function decide(input: {
       priority,
       confidence,
       priorityScore: score,
-      reason: `This target has ${acosText} with ${row.orders} orders, but no meaningful bid increase was found.`,
+      reason: `This target has ${acosText} with ${row.orders} orders, but the latest bid change was not an increase.`,
     };
   }
 
@@ -1336,7 +1336,7 @@ function categoryGuide(t: Thresholds): Record<Category, MethodologyEntry> {
     },
     "Too Many Bid Changes": {
       category: "Too Many Bid Changes",
-      title: "Changed too often",
+      title: "Over-managed",
       plain:
         "The bid on this target was changed so often that no change had time to prove itself.",
       howDecided: `More than 1 bid change happened on the same calendar day.`,
@@ -1357,7 +1357,7 @@ function categoryGuide(t: Thresholds): Record<Category, MethodologyEntry> {
       category: "Correctly Managed",
       title: "Managed correctly",
       plain: "The last bid move matched performance.",
-      howDecided: `Profitable and the bid was meaningfully raised, OR wasteful and the bid was meaningfully cut.`,
+      howDecided: `Profitable AND the latest bid change was an increase (any %), OR wasteful AND the latest bid change was a decrease (any %). Direction only — magnitude is ignored.`,
       whyItMatters: "Confirms good decisions so you can focus on the problems.",
       action: "Hold — keep doing this.",
     },
@@ -1433,7 +1433,7 @@ function buildExplain(input: ExplainInput): RowExplain {
       : `last bid move ${input.bidChangePct >= 0 ? "+" : ""}${(input.bidChangePct * 100).toFixed(0)}% (${money(input.previousBid)} → ${money(input.latestBid)})`;
 
   const reasonByCategory: Record<Category, string> = {
-    "Winners Not Scaled": `${label} makes money — ${row.orders} orders, ${money(row.sales)} sales at ${acos} ACoS — but the bid was not meaningfully raised. You are likely leaving sales on the table.`,
+    "Winners Not Scaled": `${label} makes money — ${row.orders} orders, ${money(row.sales)} sales at ${acos} ACoS — but the latest bid change was not an increase. You are likely leaving sales on the table.`,
     "Losers Not Reduced":
       row.orders === 0
         ? `${label} spent ${money(row.spend)} with 0 orders and the bid was not cut — that is pure wasted spend.`

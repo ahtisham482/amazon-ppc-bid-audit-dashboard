@@ -3045,6 +3045,104 @@ tr.why-detail td {
   margin-top: 4px;
   margin-bottom: 2px;
 }
+.bdc-kpi[tabindex="0"] {
+  border-radius: 6px;
+  outline-offset: 4px;
+}
+.bdc-kpi[tabindex="0"]:focus-visible {
+  outline: 2px solid var(--bdc-accent, #2563eb);
+}
+.bdc-active-kpis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--bdc-muted);
+  margin: 4px 0 10px;
+}
+.bdc-active-kpis-lbl {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--bdc-muted);
+}
+.bdc-active-kpi-chip {
+  background: var(--bdc-surface-2);
+  border: 1px solid var(--bdc-line);
+  color: var(--bdc-ink);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-weight: 600;
+  font-size: 11px;
+}
+.kpi-selector-scope {
+  margin-top: 4px;
+}
+.empty-row-summary {
+  font-weight: 600;
+  color: var(--text-strong, #0f172a);
+  margin: -4px 0 8px;
+}
+.campaign-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 8px 0 4px;
+  border-top: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
+}
+.campaign-controls .campaign-search {
+  flex: 1 1 220px;
+  min-width: 180px;
+  padding: 6px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.campaign-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #475569;
+}
+.campaign-controls .ctrl-lbl {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.campaign-controls select {
+  padding: 5px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 13px;
+  background: white;
+}
+.campaign-card-flash {
+  outline: 2px solid #2563eb;
+  outline-offset: 4px;
+  animation: campaign-card-flash 1.6s ease-out;
+}
+@keyframes campaign-card-flash {
+  0% {
+    background: #dbeafe;
+  }
+  100% {
+    background: transparent;
+  }
+}
+.bdc-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.method-data-quality-pointer {
+  margin-top: 12px;
+}
 
 /* ─── MOST RECENT BID MOVE pill ───────────────────────────────── */
 .bdc-bid-move {
