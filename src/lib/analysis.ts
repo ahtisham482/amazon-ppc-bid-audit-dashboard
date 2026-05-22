@@ -258,6 +258,16 @@ export interface BulkTarget {
   target: string;
   matchType: string;
   currentBid: number | null;
+  /**
+   * The original row from the Bulk file, including all IDs, Operation,
+   * State, etc. Used by the Amazon-Bulk-Operations export so the emitted
+   * CSV preserves Amazon's required columns (G12).
+   */
+  rawRow?: RawRow;
+  /** Sheet this row originated from (preserves schema correctly per program). */
+  rawSheet?: string;
+  /** Header order from the source sheet so the export can preserve column order. */
+  rawHeaders?: string[];
 }
 
 /**
@@ -280,6 +290,8 @@ export async function parseBulk(file: File): Promise<BulkTarget[]> {
       defval: "",
       raw: true,
     });
+    // Capture header order from row 0 so the export writer can preserve it.
+    const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
     for (const r of rows) {
       const entity = string(read(r, "Entity"));
       if (entity !== "Keyword" && entity !== "Product Targeting") continue;
@@ -308,6 +320,9 @@ export async function parseBulk(file: File): Promise<BulkTarget[]> {
         target,
         matchType: string(read(r, "Match Type")),
         currentBid: bid,
+        rawRow: r,
+        rawSheet: sheetName,
+        rawHeaders: headers,
       });
     }
   }

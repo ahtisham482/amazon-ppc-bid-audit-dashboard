@@ -3298,6 +3298,22 @@ tr.why-detail td {
   margin: 0;
 }
 
+/* G12: Action-Plan export buttons stack vertically */
+.plan-export-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+  min-width: 220px;
+}
+.plan-export-stack button {
+  white-space: nowrap;
+}
+.plan-export-stack button[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 /* G4: invalid-threshold inline red text */
 .threshold-field {
   position: relative;

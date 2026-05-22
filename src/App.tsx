@@ -81,6 +81,7 @@ import {
   executiveSummaryMarkdown,
   toCsv,
 } from "./lib/export";
+import { buildAmazonBulkExport } from "./lib/export-amazon-bulk";
 
 type Section =
   | "Action Plan"
@@ -616,7 +617,8 @@ export default function App() {
             activeSection={activeSection}
             result={result}
             thresholds={thresholds}
-            onExport={(kind) => handleExport(kind, result)}
+            bulkAvailable={!!bulkTargets && bulkTargets.length > 0}
+            onExport={(kind) => handleExport(kind, result, bulkTargets)}
             onNavigate={setActiveSection}
           />
         )}
@@ -981,12 +983,14 @@ function Dashboard({
   activeSection,
   result,
   thresholds,
+  bulkAvailable,
   onExport,
   onNavigate,
 }: {
   activeSection: Section;
   result: AnalysisResult;
   thresholds: Thresholds;
+  bulkAvailable: boolean;
   onExport: (kind: string) => void;
   onNavigate: (s: Section) => void;
 }) {
@@ -996,6 +1000,7 @@ function Dashboard({
         <ActionPlan
           result={result}
           thresholds={thresholds}
+          bulkAvailable={bulkAvailable}
           onExport={onExport}
           onNavigate={onNavigate}
         />
@@ -2872,11 +2877,13 @@ function MoveColumn({
 function ActionPlan({
   result,
   thresholds,
+  bulkAvailable,
   onExport,
   onNavigate,
 }: {
   result: AnalysisResult;
   thresholds: Thresholds;
+  bulkAvailable: boolean;
   onExport: (kind: string) => void;
   onNavigate: (s: Section) => void;
 }) {
@@ -2916,10 +2923,26 @@ function ActionPlan({
             </button>
           </p>
         </div>
-        <button className="button ghost" onClick={() => onExport("actions")}>
-          <Download size={16} />
-          Download action list (CSV)
-        </button>
+        <div className="plan-export-stack">
+          <button className="button ghost" onClick={() => onExport("actions")}>
+            <Download size={16} />
+            Download action list (CSV)
+          </button>
+          {/* G12: Amazon Bulk Operations export. Disabled when Box 4 missing. */}
+          <button
+            className="button primary"
+            onClick={() => onExport("amazon-bulk")}
+            disabled={!bulkAvailable}
+            title={
+              bulkAvailable
+                ? "Push/Cut bids pre-filled (+15% / −20%). Edit before uploading to Amazon."
+                : "Upload a Bulk Operations file in Box 4 to enable this export."
+            }
+          >
+            <Download size={16} />
+            Amazon Bulk Update (CSV)
+          </button>
+        </div>
       </section>
 
       {result.warnings.length > 0 && (
@@ -4696,7 +4719,11 @@ function priorityTone(priority: Priority) {
   return "green";
 }
 
-function handleExport(kind: string, result: AnalysisResult) {
+function handleExport(
+  kind: string,
+  result: AnalysisResult,
+  bulkTargets?: BulkTarget[] | null,
+) {
   const rows = result.auditRows;
   if (kind === "executive") {
     downloadText(
@@ -4718,6 +4745,13 @@ function handleExport(kind: string, result: AnalysisResult) {
       "amazon-ppc-unmatched-rows.csv",
       toCsv(result.unmatchedPerformanceRows.map(auditRowToExport)),
     );
+    return;
+  }
+  // G12: Amazon Bulk Operations export — needs the uploaded Bulk file's rows.
+  if (kind === "amazon-bulk") {
+    if (!bulkTargets || bulkTargets.length === 0) return;
+    const built = buildAmazonBulkExport(rows, bulkTargets);
+    downloadText("amazon-ppc-bulk-update.csv", built.csv);
     return;
   }
   const filtered =
