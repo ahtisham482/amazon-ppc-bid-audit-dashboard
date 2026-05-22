@@ -79,7 +79,9 @@ export function auditRowToExport(row: AuditRow): Record<string, unknown> {
     "Last Bid Change": dateShort(row.lastBidChangeDate),
     "Bid Changes": int(row.bidChanges),
     "Match Level": row.matchLevel,
-    "Before/After": row.impact.label,
+    // G22: "Before/After" column was always "Not enough data" on every row in
+    // the sample audit. The card UI now shows the actual before/after as a
+    // muted message; the CSV doesn't need a column with one constant value.
     "Decision ID": `dec_${decisionIdFromKey(row.exactKey)}`,
     "Rules Version": RULES_VERSION,
   };
@@ -95,10 +97,13 @@ export function campaignToExport(
     Orders: int(row.orders),
     ACoS: acosPct(row.acos),
     Targets: int(row.targets),
+    // G21: "Issue Count" = Winners Not Scaled + Waste Not Cut + Wrong-direction
+    // Moves + Too Many Bid Changes (does NOT include Needs More Data or Unmatched).
     "Issue Count": int(row.issueCount),
     "Winners Not Scaled": int(row.winnersNotScaled),
-    "Losers Not Reduced": int(row.losersNotReduced),
-    "Wrong Bid Changes": int(row.wrongBidChanges),
+    // G20: canonical names align with UI pills.
+    "Waste Not Cut": int(row.losersNotReduced),
+    "Wrong-direction Moves": int(row.wrongBidChanges),
     "Too Many Bid Changes": int(row.tooManyBidChanges),
     "Needs More Data": int(row.needsMoreData),
     Unmatched: int(row.unmatched),

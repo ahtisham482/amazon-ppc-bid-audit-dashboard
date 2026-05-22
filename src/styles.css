@@ -1476,6 +1476,12 @@ tr.why-detail td {
   color: var(--muted);
   font-size: 13px;
 }
+/* G15: small disclosure line under the score */
+.plan-headline p.plan-denom {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #64748b;
+}
 .hl-good {
   color: var(--green);
   font-weight: 700;
@@ -1703,6 +1709,63 @@ tr.why-detail td {
 }
 .fchip.active em {
   color: #d1fae5;
+}
+/* F4: visual divider between category chips and tag chips */
+.fchip-divider {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 0 8px;
+  align-self: center;
+  border-left: 1px dashed var(--line-strong);
+}
+/* Tag chips: subtle visual distinction from category chips */
+.fchip-tag {
+  border-style: dashed;
+  background: #fafafa;
+}
+.fchip-tag.active {
+  border-style: solid;
+}
+/* G5: product-name disambiguation suffix + ASIN hint */
+.product-dup-suffix {
+  margin-left: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 500;
+}
+.product-asin-hint {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+/* G14: auto-route toast */
+.auto-route-toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  margin: 0 0 16px;
+  background: #ecfdf5;
+  border: 1px solid #6ee7b7;
+  color: #065f46;
+  font-size: 13px;
+  border-radius: var(--radius);
+  animation: toast-in 0.2s ease-out;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ── WhyCard ─────────────────────────────────────────────────── */

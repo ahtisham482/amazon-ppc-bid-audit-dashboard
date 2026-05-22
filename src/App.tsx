@@ -219,12 +219,22 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showUploads, setShowUploads] = useState(true);
+  // G14: surface a toast when auto-detect routes a file to a different box
+  // than the one the user dropped it on. Cleared after 4 s.
+  const [autoRouteNotice, setAutoRouteNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!autoRouteNotice) return;
+    // 4 s in production; long in dev so StrictMode double-mount doesn't race
+    // the manual test reads. The toast is auto-cleared on next upload anyway.
+    const id = window.setTimeout(() => setAutoRouteNotice(null), 4000);
+    return () => window.clearTimeout(id);
+  }, [autoRouteNotice]);
 
   // One entry point for every upload. It detects what the file is from its
   // contents and routes it — so it never matters which box you use. The two
   // base files (History + SP Targeting) are required; Bulk / SB report / ACoS
   // map are optional enhancers.
-  async function ingest(file: File | null) {
+  async function ingest(file: File | null, intended?: Slot) {
     if (!file) return;
     setError(null);
     setIsLoading(true);
@@ -249,6 +259,20 @@ export default function App() {
       }
       const rows = await readRows(file);
       const kind = classifyReport(rows.length ? Object.keys(rows[0]) : []);
+      // G14: announce when the auto-detector routes the file to a different
+      // slot than the one the user clicked / dropped on.
+      if (intended && kind !== intended && kind !== "unknown") {
+        const slotName: Record<Slot, string> = {
+          history: "Box 1 (History)",
+          targeting: "Box 2 (SP Targeting)",
+          "sb-targeting": "Box 3 (SB report)",
+          bulk: "Box 4 (Bulk file)",
+          "acos-map": "Box 5 (ACoS map)",
+        };
+        setAutoRouteNotice(
+          `Auto-detected as ${slotName[kind as Slot]} — moved your file there.`,
+        );
+      }
       if (kind === "history") {
         setHistoryRaw(rows);
         setHistoryInfo({ name: file.name, rows: rows.length });
@@ -401,6 +425,20 @@ export default function App() {
               <small>
                 History {number(historyInfo?.rows ?? 0)} · SP{" "}
                 {number(targetingInfo?.rows ?? 0)} rows
+                {result &&
+                  (() => {
+                    const total = result.summary.totalTargets;
+                    const matched = result.summary.matchedTargets;
+                    const pct =
+                      total > 0 ? Math.round((matched / total) * 100) : 0;
+                    return (
+                      <>
+                        {" "}
+                        · {number(matched)} of {number(total)} targets matched (
+                        {pct}%)
+                      </>
+                    );
+                  })()}
                 {sbInfo ? " · SB ✓" : ""}
                 {bulkInfo ? " · Bulk ✓" : ""}
                 {acosInfo ? " · ACoS map ✓" : ""} — click to change files or
@@ -418,6 +456,7 @@ export default function App() {
                   info={historyInfo}
                   busy={isLoading}
                   onFile={ingest}
+                  slot="history"
                 />
                 <FileDrop
                   title="2 · SP Targeting"
@@ -426,6 +465,7 @@ export default function App() {
                   info={targetingInfo}
                   busy={isLoading}
                   onFile={ingest}
+                  slot="targeting"
                 />
                 <FileDrop
                   title="3 · SB report"
@@ -434,6 +474,7 @@ export default function App() {
                   info={sbInfo}
                   busy={isLoading}
                   onFile={ingest}
+                  slot="sb-targeting"
                 />
                 <FileDrop
                   title="4 · Bulk file"
@@ -442,6 +483,7 @@ export default function App() {
                   info={bulkInfo}
                   busy={isLoading}
                   onFile={ingest}
+                  slot="bulk"
                 />
                 <FileDrop
                   title="5 · ACoS map"
@@ -450,6 +492,7 @@ export default function App() {
                   info={acosInfo}
                   busy={isLoading}
                   onFile={ingest}
+                  slot="acos-map"
                 />
               </div>
               <p className="upload-hint">
@@ -495,6 +538,13 @@ export default function App() {
           </div>
         )}
 
+        {autoRouteNotice && (
+          <div className="auto-route-toast" role="status">
+            <CheckCircle2 size={16} />
+            {autoRouteNotice}
+          </div>
+        )}
+
         {!result ? (
           <EmptyState ready={!!historyRaw && !!targetingRaw} />
         ) : (
@@ -511,6 +561,8 @@ export default function App() {
   );
 }
 
+type Slot = "history" | "targeting" | "sb-targeting" | "bulk" | "acos-map";
+
 function FileDrop({
   title,
   description,
@@ -518,13 +570,15 @@ function FileDrop({
   busy,
   onFile,
   tag,
+  slot,
 }: {
   title: string;
   description: string;
   info: FileInfo | null;
   busy: boolean;
-  onFile: (file: File | null) => void;
+  onFile: (file: File | null, intended: Slot) => void;
   tag?: "Required" | "Optional";
+  slot: Slot;
 }) {
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -553,7 +607,7 @@ function FileDrop({
       onDrop={(event) => {
         event.preventDefault();
         setDragOver(false);
-        onFile(event.dataTransfer.files?.[0] ?? null);
+        onFile(event.dataTransfer.files?.[0] ?? null, slot);
       }}
     >
       <input
@@ -561,7 +615,7 @@ function FileDrop({
         type="file"
         accept=".csv,.xlsx,.xls,.xlsm,.xlsb,.txt"
         onChange={(event) => {
-          onFile(event.target.files?.[0] ?? null);
+          onFile(event.target.files?.[0] ?? null, slot);
           event.target.value = "";
         }}
       />
@@ -1053,7 +1107,12 @@ function buildDoThis(row: AuditRow, lookbackDays: number): string {
     case "Needs More Data":
       return "Wait — do not change the bid yet. Let it run until there is enough data to judge it fairly.";
     case "Correctly Managed":
-      return "Leave it alone — this is working as intended. No action needed.";
+      // F6: split bid-direction quality from outcome quality. The card is
+      // "Correctly Managed" because the LAST bid move matched performance —
+      // it may still be over the ACoS target while it recovers.
+      return acosFmt
+        ? `Bid direction is correct — keep going. ACoS is ${acosFmt}; watch as it trends toward the target.`
+        : "Bid direction is correct — keep going. Let the latest move work before changing again.";
     case "Monitor":
       return "Watch, do not act yet — one more week of data will make the right move clearer.";
     default:
@@ -1710,7 +1769,7 @@ function verdictLabel(v: TimelineKpiVerdict["verdict"]): {
     case "acted_correctly":
       return { text: "Acted correctly", cls: "good", icon: "✓" };
     case "wrong_direction":
-      return { text: "Wrong direction", cls: "bad", icon: "✗" };
+      return { text: "Wrong-direction move", cls: "bad", icon: "✗" };
     case "not_reduced":
       return { text: "Not reduced", cls: "bad", icon: "✗" };
     case "not_increased":
@@ -2067,14 +2126,24 @@ function BidDecisionCard({
     return `${fmt(first)} – ${fmt(last)}`;
   })();
 
+  // F13: anchor the wording to the actual date so "7 days ago" and "today"
+  // never appear on the same card for the same event. Format as
+  // "Latest change: May 15 (7 days ago)".
   const lastChangeDateText = row.lastBidChangeDate
     ? (() => {
         const diff = Math.floor(
           (today.getTime() - row.lastBidChangeDate.getTime()) / 86_400_000,
         );
-        if (diff === 0) return "Last change today";
-        if (diff === 1) return "Last change yesterday";
-        return `Last change ${diff} days ago`;
+        const fmt = (d: Date) =>
+          d.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            timeZone: "UTC",
+          });
+        const dateStr = fmt(row.lastBidChangeDate);
+        if (diff === 0) return `Latest change: ${dateStr} (today)`;
+        if (diff === 1) return `Latest change: ${dateStr} (yesterday)`;
+        return `Latest change: ${dateStr} (${diff} days ago)`;
       })()
     : "No bid changes in window";
 
@@ -2230,14 +2299,17 @@ function BidDecisionCard({
                   {avgOrderValue ? `avg ${avgOrderValue}` : "—"}
                 </div>
               </div>
-              <div className="bdc-kpi">
+              <div
+                className="bdc-kpi"
+                title="Average CPC can exceed your max bid because of dynamic bidding (+up to 100%) and placement modifiers — Amazon controls this."
+              >
                 <div className="bdc-kpi-label">CPC</div>
                 <div className="bdc-kpi-value">{cpc}</div>
                 <div className="bdc-kpi-sub">
                   {row.currentBid != null
-                    ? `at ${money2(row.currentBid)} max bid`
+                    ? `at ${money2(row.currentBid)} max bid ⓘ`
                     : row.latestBid != null
-                      ? `last bid ${money2(row.latestBid)}`
+                      ? `last bid ${money2(row.latestBid)} ⓘ`
                       : "—"}
                 </div>
               </div>
@@ -2741,6 +2813,14 @@ function ActionPlan({
             <span className="hl-bad">{number(cut.length)} to cut</span>,{" "}
             <span className="hl-muted">{number(hold.length)} to hold</span>
           </h2>
+          {/* G15: surface the grading denominator so the score doesn't feel like
+              a sweeping verdict on all 1,211 targets when it's actually based on
+              the gradeable subset. */}
+          <p className="plan-denom">
+            Score based on {number(s.scoreBreakdown.judged)} fully-matched
+            targets with enough data · {number(s.scoreBreakdown.setAside)} set
+            aside (see Help).
+          </p>
           <p>
             Start with the green column, then the red. Grey can wait. Click any
             keyword for the exact reason and numbers.{" "}
@@ -2807,15 +2887,44 @@ function ActionPlan({
   );
 }
 
+// F4: chips are now two visually-separated groups so counts make sense:
+//   • `category` chips partition the rows (Push / Hold / Cut / All sum cleanly).
+//   • `tag` chips overlay onto categories (Winners-not-scaled / Waste-not-cut /
+//     Wrong-direction moves / Over-managed). A row can be in multiple tags AND
+//     in exactly one category — which is why the chip counts don't sum to All.
+// G20: "Wrong direction" → canonical "Wrong-direction moves" everywhere.
 const ALL_FILTERS: Array<{
   id: string;
   label: string;
+  kind: "category" | "tag";
+  tooltip?: string;
   test: (r: AuditRow) => boolean;
 }> = [
-  { id: "all", label: "All", test: () => true },
+  { id: "all", label: "All", kind: "category", test: () => true },
+  {
+    id: "push",
+    label: "Push",
+    kind: "category",
+    test: (r) => moveOf(r) === "PUSH",
+  },
+  {
+    id: "hold",
+    label: "Hold",
+    kind: "category",
+    test: (r) => moveOf(r) === "HOLD",
+  },
+  {
+    id: "cut",
+    label: "Cut",
+    kind: "category",
+    test: (r) => moveOf(r) === "CUT",
+  },
   {
     id: "winners",
     label: "Winners not scaled",
+    kind: "tag",
+    tooltip:
+      "Profitable target that was not bid up. Counted in Push/Hold/Cut too.",
     test: (r) =>
       r.category === "Winners Not Scaled" ||
       r.secondaryTags.includes("Winners Not Scaled"),
@@ -2823,21 +2932,28 @@ const ALL_FILTERS: Array<{
   {
     id: "waste",
     label: "Waste not cut",
+    kind: "tag",
+    tooltip: "Money-loser that was not reduced. Counted in Push/Hold/Cut too.",
     test: (r) =>
       r.category === "Losers Not Reduced" ||
       r.secondaryTags.includes("Losers Not Reduced"),
   },
   {
     id: "wrong",
-    label: "Wrong direction",
+    label: "Wrong-direction moves",
+    kind: "tag",
+    tooltip:
+      "Bid moved opposite to performance (profitable cut, or unprofitable raised). Counted in Push/Hold/Cut too.",
     test: (r) =>
       r.category === "Profitable Terms Reduced" ||
       r.category === "Unprofitable Terms Increased",
   },
-  { id: "hold", label: "Hold", test: (r) => moveOf(r) === "HOLD" },
   {
     id: "over",
     label: "Over-managed",
+    kind: "tag",
+    tooltip:
+      "Bid changed more than once in the same day. Counted in Push/Hold/Cut too.",
     test: (r) =>
       r.category === "Too Many Bid Changes" ||
       r.secondaryTags.includes("Too Many Bid Changes"),
@@ -2893,11 +3009,24 @@ function AllTargets({
         </div>
       </div>
       <div className="filter-chips">
-        {ALL_FILTERS.map((f) => (
+        {ALL_FILTERS.filter((f) => f.kind === "category").map((f) => (
           <button
             key={f.id}
             className={`fchip${filter === f.id ? " active" : ""}`}
             onClick={() => setFilter(f.id)}
+          >
+            {f.label} <em>{number(counts[f.id])}</em>
+          </button>
+        ))}
+        <span className="fchip-divider" aria-hidden="true">
+          tags (overlap)
+        </span>
+        {ALL_FILTERS.filter((f) => f.kind === "tag").map((f) => (
+          <button
+            key={f.id}
+            className={`fchip fchip-tag${filter === f.id ? " active" : ""}`}
+            onClick={() => setFilter(f.id)}
+            title={f.tooltip}
           >
             {f.label} <em>{number(counts[f.id])}</em>
           </button>
@@ -3719,22 +3848,47 @@ function ProductsView({
               </tr>
             </thead>
             <tbody>
-              {products.map((p) => {
+              {products.map((p, productIdx) => {
                 const heatClass = acosHeatClass(p.acos, targetAcos);
                 const issueRate = p.targets > 0 ? p.issueCount / p.targets : 0;
-                const isExpanded = expandedProduct === p.productCode;
+                const isExpanded =
+                  expandedProduct === `${p.productCode}#${productIdx}`;
                 const productRows = result.auditRows.filter(
                   (r) =>
                     (parseCampaignName(r.campaign).productCode ||
                       r.campaign) === p.productCode,
                 );
+                // G5: when the same productCode appears more than once, label
+                // each occurrence "(N of M)" so Sarah can tell them apart even
+                // though Amazon's report doesn't carry distinct ASINs here.
+                const sameCodeAll = products.filter(
+                  (q) => q.productCode === p.productCode,
+                );
+                const sameCodeIdx = sameCodeAll.findIndex((q) => q === p) + 1;
+                const dupSuffix =
+                  sameCodeAll.length > 1
+                    ? ` (${sameCodeIdx} of ${sameCodeAll.length})`
+                    : "";
+                // Pull the first ASIN target inside this product (if any) as
+                // a hint of what the product actually is.
+                const asinHint = (() => {
+                  const asinRow = productRows.find((r) =>
+                    /^asin=/i.test(r.targeting),
+                  );
+                  if (!asinRow) return null;
+                  const m = asinRow.targeting.match(
+                    /asin\s*=\s*"?([A-Z0-9]{6,})/i,
+                  );
+                  return m ? m[1] : null;
+                })();
+                const rowKey = `${p.productCode}#${productIdx}`;
                 return (
-                  <Fragment key={p.productCode}>
+                  <Fragment key={rowKey}>
                     <tr
                       className={`product-row${isExpanded ? " product-row-open" : ""}${productRows.length > 0 ? " product-row-clickable" : ""}`}
                       onClick={() =>
                         productRows.length > 0 &&
-                        setExpandedProduct(isExpanded ? null : p.productCode)
+                        setExpandedProduct(isExpanded ? null : rowKey)
                       }
                     >
                       <td className="product-name-cell">
@@ -3743,7 +3897,19 @@ function ProductsView({
                             {isExpanded ? "▾" : "▸"}
                           </span>
                         )}
-                        {p.productCode}
+                        <span>
+                          {p.productCode}
+                          {dupSuffix && (
+                            <span className="product-dup-suffix">
+                              {dupSuffix}
+                            </span>
+                          )}
+                        </span>
+                        {asinHint && (
+                          <small className="product-asin-hint">
+                            ASIN {asinHint}
+                          </small>
+                        )}
                       </td>
                       <td>{money(p.spend)}</td>
                       <td>{money(p.sales)}</td>
@@ -4247,11 +4413,37 @@ function SBView({ result }: { result: AnalysisResult }) {
         <div className="story-narrative">
           <p>
             {number(s.totalTargets)} SB targets · {number(s.matchedTargets)}{" "}
-            matched to SB bid history · {number(s.winnersNotScaled)} winners not
-            scaled · {number(s.losersNotReduced)} waste not cut ·{" "}
+            matched to SB bid history
+            {(() => {
+              const total = s.totalTargets;
+              const matched = s.matchedTargets;
+              const pct = total > 0 ? Math.round((matched / total) * 100) : 0;
+              return ` (${pct}%)`;
+            })()}{" "}
+            · {number(s.winnersNotScaled)} winners not scaled ·{" "}
+            {number(s.losersNotReduced)} waste not cut ·{" "}
             {number(s.tooManyBidChanges)} over-managed.
           </p>
         </div>
+        {/* F15: when match rate is low, prepend an explicit yellow notice
+            so Sarah knows the SB column is sparse and what to do about it. */}
+        {(() => {
+          const total = s.totalTargets;
+          const matched = s.matchedTargets;
+          const pct = total > 0 ? matched / total : 1;
+          if (pct >= 0.5) return null;
+          const pctRound = Math.round(pct * 100);
+          return (
+            <div className="insight warning sb-sparse-notice">
+              <AlertTriangle size={16} />
+              <span>
+                Heads up — only {pctRound}% of SB keywords matched bid history.
+                SB results will be sparse. Upload a wider date-range History
+                export to improve.
+              </span>
+            </div>
+          );
+        })()}
         <div className="insight-list">
           {sb.notes.map((n) => (
             <div className="insight warning" key={n}>
