@@ -12,34 +12,13 @@ export default defineConfig({
     port: 5173,
   },
   build: {
-    // Bumped from default 500 KB — the main bundle still won't hit this even
-    // after splitting, but keeps the warning quiet in CI.
-    chunkSizeWarningLimit: 800,
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (!id.includes("node_modules")) return undefined;
-          // Group heavy libs into their own chunks so the main app bundle
-          // shrinks. Loaded only when their entry point is imported.
-          if (
-            /[\\/]node_modules[\\/](recharts|d3-|victory-vendor|react-smooth)/.test(
-              id,
-            )
-          ) {
-            return "vendor-charts";
-          }
-          if (/[\\/]node_modules[\\/]xlsx/.test(id)) return "vendor-files";
-          if (/[\\/]node_modules[\\/]@sentry/.test(id)) return "vendor-sentry";
-          if (
-            /[\\/]node_modules[\\/](react|react-dom|react-router-dom|react-is)[\\/]/.test(
-              id,
-            )
-          ) {
-            return "vendor-react";
-          }
-          return "vendor";
-        },
-      },
-    },
+    // Bump chunk-size warning threshold so the CI log isn't loud about the
+    // single vendor chunk. xlsx (heavy) is already dynamic-imported in
+    // lib/analysis.ts, so it's pulled into its own chunk on demand.
+    // Privacy / Terms / Changelog are React.lazy() routes — also lazy.
+    // We intentionally do NOT use manualChunks: it caused a circular vendor
+    // dependency on GH Pages where React loaded after a module that needed
+    // React.createContext (Phase 3 deploy blocker).
+    chunkSizeWarningLimit: 1100,
   },
 });
