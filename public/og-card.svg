@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#1e293b" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)" />
+  <!-- Logo block -->
+  <rect x="84" y="84" width="80" height="80" rx="12" fill="#101820" />
+  <path d="M 102 145 V 105 H 132 C 148 105 158 113 158 121 C 158 129 148 137 132 137 H 102 Z" fill="#0f766e" />
+  <rect x="102" y="151" width="56" height="10" fill="#f59e0b" />
+  <text x="184" y="118" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="26" font-weight="700" fill="#94a3b8">PPC AUDITOR</text>
+  <text x="184" y="148" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="500" fill="#64748b">Bid decisions made simple</text>
+  <!-- Headline -->
+  <text x="84" y="288" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="56" font-weight="800" fill="#ffffff">Amazon PPC —</text>
+  <text x="84" y="356" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="56" font-weight="800" fill="#ffffff">What to do.</text>
+  <!-- Sub -->
+  <text x="84" y="420" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="26" font-weight="500" fill="#cbd5e1">Push, hold, or cut every keyword —</text>
+  <text x="84" y="456" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="26" font-weight="500" fill="#cbd5e1">in plain English. Runs locally.</text>
+  <!-- Verdict pills -->
+  <g font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="22" font-weight="700">
+    <rect x="84" y="510" width="120" height="50" rx="25" fill="#15803d" />
+    <text x="144" y="542" text-anchor="middle" fill="#dcfce7">PUSH</text>
+    <rect x="220" y="510" width="120" height="50" rx="25" fill="#475569" />
+    <text x="280" y="542" text-anchor="middle" fill="#cbd5e1">HOLD</text>
+    <rect x="356" y="510" width="120" height="50" rx="25" fill="#991b1b" />
+    <text x="416" y="542" text-anchor="middle" fill="#fee2e2" >CUT</text>
+  </g>
+  <!-- Score chip in corner -->
+  <g>
+    <circle cx="1040" cy="320" r="130" fill="none" stroke="#0f766e" stroke-width="14" />
+    <circle cx="1040" cy="320" r="130" fill="none" stroke="#0f172a" stroke-width="14" stroke-dasharray="200 1000" transform="rotate(-90 1040 320)" />
+    <text x="1040" y="340" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="80" font-weight="800" fill="#0f766e">92</text>
+    <text x="1040" y="380" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="22" font-weight="500" fill="#94a3b8">DECISION SCORE</text>
+  </g>
+</svg>
