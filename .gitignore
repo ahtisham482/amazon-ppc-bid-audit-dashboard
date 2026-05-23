@@ -2,6 +2,8 @@ node_modules/
 dist/
 .env
 .env.*
+# But DO commit the env example so contributors know which vars exist.
+!.env.example
 *.log
 *.local
 .DS_Store
@@ -12,6 +14,13 @@ Thumbs.db
 *.xlsx
 *.xls
 *.tsv
+# But DO commit the bundled sample-data files — they back the
+# "Try with sample data" button on the landing screen.
+!public/sample/*.csv
+!public/sample/*.xlsx
 
 # Local QA screenshots.
 ppc-dashboard-*.png
+
+# Phase-3 prompt backup files (local scratch only).
+*.prompt[0-9]*-backup

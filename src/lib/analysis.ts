@@ -1,5 +1,11 @@
 import Papa from "papaparse";
-import * as XLSX from "xlsx";
+// xlsx is dynamically imported inside readRows / parseBulk / readWorkbookSheetNames
+// so the ~110 KB chunk is fetched only when the user actually uploads a workbook.
+// Type-only import keeps the WorkBook annotation working without including the runtime.
+import type * as XLSX from "xlsx";
+async function loadXLSX(): Promise<typeof import("xlsx")> {
+  return import("xlsx");
+}
 import {
   AnalysisResult,
   AuditRow,
@@ -113,6 +119,7 @@ export async function readRows(file: File): Promise<RawRow[]> {
   const isWorkbook = /\.(xlsx|xlsm|xlsb|xls)$/.test(name);
 
   if (isWorkbook) {
+    const XLSX = await loadXLSX();
     let workbook: XLSX.WorkBook;
     try {
       const buffer = await file.arrayBuffer();
@@ -235,6 +242,7 @@ export async function parseTargetingWorkbook(file: File): Promise<RawRow[]> {
 /** Fast peek at a workbook's sheet names (used to spot a Bulk file). */
 export async function readWorkbookSheetNames(file: File): Promise<string[]> {
   try {
+    const XLSX = await loadXLSX();
     const buffer = await file.arrayBuffer();
     const wb = XLSX.read(new Uint8Array(buffer), {
       type: "array",
@@ -276,6 +284,7 @@ export interface BulkTarget {
  * Keyword / Product Targeting with its current bid.
  */
 export async function parseBulk(file: File): Promise<BulkTarget[]> {
+  const XLSX = await loadXLSX();
   const buffer = await file.arrayBuffer();
   const wb = XLSX.read(new Uint8Array(buffer), {
     type: "array",

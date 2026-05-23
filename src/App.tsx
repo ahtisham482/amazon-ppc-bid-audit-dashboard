@@ -1,4 +1,68 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import {
+  countActions,
+  loadActions,
+  makeActionRecord,
+  onStorageError,
+  pruneExpiredInMap,
+  saveActions,
+  targetActionKey,
+  type TargetActionKind,
+  type TargetActionMap,
+  type TargetActionRecord,
+} from "./lib/target-actions";
+import {
+  ToastContainer,
+  ToastProvider,
+  useToast,
+  type ToastKind,
+} from "./lib/toast";
+import { bucketScore, track } from "./lib/analytics";
+import {
+  Tour,
+  clearTourSeen,
+  hasSeenTour,
+  markTourSeen,
+  type TourStep,
+} from "./lib/tour";
+
+const TOUR_STEPS: TourStep[] = [
+  {
+    selector: ".plan",
+    title: "Your bid-management score",
+    body: "The big number is your bid-management health — 0 to 100. Below it you see how many keywords to push, hold, or cut, and the dollars in play.",
+    placement: "bottom",
+  },
+  {
+    selector: ".plan .moves, .plan .move-column, .plan",
+    title: "Three buckets: push, hold, cut",
+    body: "Every audited target lands in one of three buckets — bid up, leave alone, or cut. Each verdict comes with a plain-English reason.",
+    placement: "top",
+  },
+  {
+    selector: '.plan button[class*="primary"], .plan button',
+    title: "Every decision, with a reason",
+    body: 'Open "All Targets" in the sidebar to filter, sort, and click any "Why?" to see the exact rule the engine used.',
+    placement: "top",
+  },
+  {
+    selector: ".uploads-region, .sample-banner, .topbar",
+    title: "Tune the rules to your account",
+    body: "Defaults are conservative. Open the ⚙ settings panel under the upload boxes to change target ACoS or the windows the engine uses.",
+    placement: "top",
+  },
+];
 import {
   Activity,
   AlertTriangle,
@@ -131,6 +195,114 @@ interface FileInfo {
   rows: number;
 }
 
+// ─── Target actions context (Prompt 2: persistence) ───────────────────────
+// We need ack/snooze/hide state available to BidDecisionCard (deep in the
+// table) and AllTargets (for filtering / toolbar counts), so a context
+// avoids drilling props through 5 layers.
+
+interface TargetActionsContextValue {
+  actions: TargetActionMap;
+  getAction: (key: string) => TargetActionRecord | undefined;
+  setAction: (key: string, kind: TargetActionKind) => void;
+  clearAction: (key: string) => void;
+  clearByKind: (kind: TargetActionKind) => void;
+  clearAll: () => void;
+  counts: { ack: number; snooze: number; hide: number; total: number };
+  storageWarning: "quota" | "write" | "read" | null;
+}
+
+const TargetActionsContext = createContext<TargetActionsContextValue | null>(
+  null,
+);
+
+// Lets the Help tab (deep in the tree) restart the first-run tour.
+const TourControlContext = createContext<{ restart: () => void } | null>(null);
+function useTourControl() {
+  return useContext(TourControlContext);
+}
+
+function useTargetActionsContext(): TargetActionsContextValue {
+  const ctx = useContext(TargetActionsContext);
+  if (!ctx) {
+    throw new Error(
+      "TargetActionsContext missing — wrap your tree in <TargetActionsContext.Provider>",
+    );
+  }
+  return ctx;
+}
+
+function useTargetActionsState(): TargetActionsContextValue {
+  const [actions, setActions] = useState<TargetActionMap>(() => loadActions());
+  const [storageWarning, setStorageWarning] = useState<
+    "quota" | "write" | "read" | null
+  >(null);
+
+  useEffect(() => {
+    onStorageError((kind) => setStorageWarning(kind));
+  }, []);
+
+  // Persist whenever actions change.
+  useEffect(() => {
+    saveActions(actions);
+  }, [actions]);
+
+  // Sweep expired snoozes every 60 s so the UI auto-unsnoozes without a reload.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setActions((prev) => {
+        const pruned = pruneExpiredInMap(prev);
+        return pruned ?? prev;
+      });
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const getAction = useCallback((key: string) => actions[key], [actions]);
+
+  const setAction = useCallback((key: string, kind: TargetActionKind) => {
+    setActions((prev) => ({ ...prev, [key]: makeActionRecord(kind) }));
+  }, []);
+
+  const clearAction = useCallback((key: string) => {
+    setActions((prev) => {
+      if (!prev[key]) return prev;
+      const out = { ...prev };
+      delete out[key];
+      return out;
+    });
+  }, []);
+
+  const clearByKind = useCallback((kind: TargetActionKind) => {
+    setActions((prev) => {
+      const out: TargetActionMap = {};
+      let changed = false;
+      for (const [k, v] of Object.entries(prev)) {
+        if (v.action === kind) {
+          changed = true;
+          continue;
+        }
+        out[k] = v;
+      }
+      return changed ? out : prev;
+    });
+  }, []);
+
+  const clearAll = useCallback(() => setActions({}), []);
+
+  const counts = useMemo(() => countActions(actions), [actions]);
+
+  return {
+    actions,
+    getAction,
+    setAction,
+    clearAction,
+    clearByKind,
+    clearAll,
+    counts,
+    storageWarning,
+  };
+}
+
 // ─── Threshold persistence (G3 + G2) ───────────────────────────────────────
 const THRESHOLD_STORAGE_KEY = "ppc-auditor:thresholds:v1";
 
@@ -240,6 +412,7 @@ function hasInvalidThresholds(t: Thresholds): boolean {
 }
 
 export default function App() {
+  const targetActionsState = useTargetActionsState();
   const [historyRaw, setHistoryRaw] = useState<
     Record<string, unknown>[] | null
   >(null);
@@ -276,6 +449,32 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showUploads, setShowUploads] = useState(true);
+  const [tourActive, setTourActive] = useState(false);
+  const [sampleBannerVisible, setSampleBannerVisible] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const pendingAutoAnalyzeRef = useRef(false);
+
+  // Close mobile sidebar when navigation occurs (handled at the nav click site).
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [activeSection]);
+
+  // Auto-open the tour on first ever visit, after analysis is ready.
+  useEffect(() => {
+    if (result && !hasSeenTour()) {
+      const t = window.setTimeout(() => setTourActive(true), 800);
+      return () => window.clearTimeout(t);
+    }
+  }, [result]);
+
+  // When loadSampleData has ingested both files, trigger compute automatically.
+  useEffect(() => {
+    if (pendingAutoAnalyzeRef.current && historyRaw && targetingRaw) {
+      pendingAutoAnalyzeRef.current = false;
+      compute(thresholds, { collapseUploads: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyRaw, targetingRaw]);
   // G14: surface a toast when auto-detect routes a file to a different box
   // than the one the user dropped it on. Cleared after 4 s.
   const [autoRouteNotice, setAutoRouteNotice] = useState<string | null>(null);
@@ -387,19 +586,25 @@ export default function App() {
     }
     setError(null);
     try {
-      setResult(
-        analyzeFiles(
-          historyRaw,
-          targetingRaw,
-          historyInfo?.name ?? "history",
-          targetingInfo?.name ?? "targeting",
-          next,
-          buildOpts(),
-        ),
+      const computed = analyzeFiles(
+        historyRaw,
+        targetingRaw,
+        historyInfo?.name ?? "history",
+        targetingInfo?.name ?? "targeting",
+        next,
+        buildOpts(),
       );
-      // Only collapse on the user-initiated Analyze action — not on
-      // threshold/KPI tweaks, which would close the settings panel mid-edit.
-      if (opts.collapseUploads) setShowUploads(false);
+      setResult(computed);
+      if (opts.collapseUploads) {
+        // user-initiated Analyze — fire analytics events
+        track("analyze_clicked", {
+          hasOptionalFiles: !!sbRaw || !!bulkTargets || !!acosMap,
+        });
+        track("decision_score_computed", {
+          scoreBucket: bucketScore(computed.summary.decisionScore),
+        });
+        setShowUploads(false);
+      }
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Unable to analyze the files.",
@@ -411,231 +616,514 @@ export default function App() {
     compute(thresholds, { collapseUploads: true });
   }
 
+  async function loadSampleData() {
+    setError(null);
+    try {
+      const base = import.meta.env.BASE_URL ?? "/";
+      const [historyResp, spResp] = await Promise.all([
+        fetch(`${base}sample/history.csv`),
+        fetch(`${base}sample/sp-targeting.xlsx`),
+      ]);
+      if (!historyResp.ok || !spResp.ok) {
+        throw new Error("Sample files not found on the server.");
+      }
+      const historyBlob = await historyResp.blob();
+      const spBlob = await spResp.blob();
+      const historyFile = new File([historyBlob], "sample-history.csv", {
+        type: "text/csv",
+      });
+      const spFile = new File([spBlob], "sample-sp-targeting.xlsx", {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      // Flag the auto-analyze effect BEFORE ingestion so it fires the moment
+      // both raw payloads land in state.
+      pendingAutoAnalyzeRef.current = true;
+      setSampleBannerVisible(true);
+      // ingest() handles its own setIsLoading. Run sequentially to avoid
+      // out-of-order state writes.
+      await ingest(historyFile, "history");
+      await ingest(spFile, "targeting");
+    } catch (e) {
+      pendingAutoAnalyzeRef.current = false;
+      setSampleBannerVisible(false);
+      setError(
+        e instanceof Error
+          ? `Couldn't load sample data: ${e.message}`
+          : "Couldn't load sample data.",
+      );
+    }
+  }
+
   function updateThresholds(next: Thresholds) {
     setThresholds(next);
     if (historyRaw && targetingRaw && result) compute(next);
   }
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">P</div>
-          <div>
-            <strong>PPC Auditor</strong>
-            <span>Bid decisions</span>
-          </div>
-        </div>
-        <nav className="nav-list" aria-label="Dashboard sections">
-          {sections.map(({ id, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              className={activeSection === id ? "nav-item active" : "nav-item"}
-              aria-current={activeSection === id ? "page" : undefined}
-              onClick={() => setActiveSection(id)}
+    <ToastProvider>
+      <TargetActionsContext.Provider value={targetActionsState}>
+        <TourControlContext.Provider
+          value={{
+            restart: () => {
+              clearTourSeen();
+              setTourActive(true);
+            },
+          }}
+        >
+          <StorageWarningSync />
+          <a href="#main-content" className="skip-link">
+            Skip to main content
+          </a>
+          <div className="app-shell">
+            {sidebarOpen && (
+              <div
+                className="sidebar-backdrop"
+                onClick={() => setSidebarOpen(false)}
+                aria-hidden="true"
+              />
+            )}
+            <aside
+              className={`sidebar${sidebarOpen ? " sidebar-open" : ""}`}
+              aria-hidden={!sidebarOpen ? undefined : undefined}
             >
-              <Icon size={18} />
-              <span>{id}</span>
-            </button>
-          ))}
-        </nav>
-        <div className="privacy-note">
-          <ShieldCheck size={16} />
-          <span>Files process locally in your browser.</span>
-        </div>
-      </aside>
-
-      <main className="main">
-        <header className="topbar">
-          <div>
-            <h1>Amazon PPC — What To Do</h1>
-            <p>
-              Upload your reports, then see exactly which keywords to{" "}
-              <strong>push</strong>, <strong>hold</strong>, or{" "}
-              <strong>cut</strong> — in plain English.
-            </p>
-          </div>
-          <div className="topbar-actions">
-            <button
-              className="button primary"
-              onClick={runAnalysis}
-              disabled={
-                isLoading ||
-                !historyRaw ||
-                !targetingRaw ||
-                hasInvalidThresholds(thresholds)
-              }
-              title={
-                hasInvalidThresholds(thresholds)
-                  ? "Fix invalid threshold values to enable Analyze"
-                  : undefined
-              }
-            >
-              {isLoading ? (
-                <RefreshCw className="spin" size={17} />
-              ) : (
-                <LineChart size={17} />
-              )}
-              Analyze
-            </button>
-          </div>
-        </header>
-
-        <section className="uploads-block" aria-label="Upload reports">
-          {result && (
-            <button
-              type="button"
-              className="uploads-toggle"
-              onClick={() => setShowUploads((v) => !v)}
-              aria-expanded={showUploads}
-            >
-              {showUploads ? "▾" : "▸"} Reports loaded
-              <small>
-                History {number(historyInfo?.rows ?? 0)} · SP{" "}
-                {number(targetingInfo?.rows ?? 0)} rows
-                {result &&
-                  (() => {
-                    const total = result.summary.totalTargets;
-                    const matched = result.summary.matchedTargets;
-                    const pct =
-                      total > 0 ? Math.round((matched / total) * 100) : 0;
-                    return (
-                      <>
-                        {" "}
-                        · {number(matched)} of {number(total)} targets matched (
-                        {pct}%)
-                      </>
-                    );
-                  })()}
-                {sbInfo ? " · SB ✓" : ""}
-                {bulkInfo ? " · Bulk ✓" : ""}
-                {acosInfo ? " · ACoS map ✓" : ""} — click to change files or
-                settings
-              </small>
-            </button>
-          )}
-          {showUploads && (
-            <>
-              <div className="upload-grid">
-                <FileDrop
-                  title="1 · History"
-                  description="Amazon Ads History export"
-                  tag="Required"
-                  info={historyInfo}
-                  busy={isLoading}
-                  onFile={ingest}
-                  slot="history"
-                />
-                <FileDrop
-                  title="2 · SP Targeting"
-                  description="Sponsored Products report"
-                  tag="Required"
-                  info={targetingInfo}
-                  busy={isLoading}
-                  onFile={ingest}
-                  slot="targeting"
-                />
-                <FileDrop
-                  title="3 · SB report"
-                  description="Sponsored Brands report"
-                  tag="Optional"
-                  info={sbInfo}
-                  busy={isLoading}
-                  onFile={ingest}
-                  slot="sb-targeting"
-                />
-                <FileDrop
-                  title="4 · Bulk file"
-                  description="Adds current bids"
-                  tag="Optional"
-                  info={bulkInfo}
-                  busy={isLoading}
-                  onFile={ingest}
-                  slot="bulk"
-                />
-                <FileDrop
-                  title="5 · ACoS map"
-                  description="Per-campaign targets"
-                  tag="Optional"
-                  info={acosInfo}
-                  busy={isLoading}
-                  onFile={ingest}
-                  slot="acos-map"
-                />
+              <div className="brand">
+                <div className="brand-mark">P</div>
+                <div>
+                  <strong>PPC Auditor</strong>
+                  <span>Bid decisions</span>
+                </div>
               </div>
-              <p className="upload-hint">
-                Boxes 1 &amp; 2 are required; 3–5 are optional and add depth.
-                Wrong box? Files are auto-detected, so it still works. CSV, XLS,
-                XLSX all accepted.
-              </p>
-              <details className="settings-fold">
-                <summary>Adjust targets &amp; thresholds (optional)</summary>
-                {(thresholdsRestored || isCustomThresholds(thresholds)) && (
-                  <div className="threshold-restored">
-                    <span>
-                      {thresholdsRestored
-                        ? "Using your saved thresholds."
-                        : "Custom thresholds active."}
-                    </span>
+              <nav
+                className="nav-list"
+                aria-label="Dashboard sections"
+                id="dashboard-nav"
+              >
+                {sections.map(({ id, icon: Icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={
+                      activeSection === id ? "nav-item active" : "nav-item"
+                    }
+                    aria-current={activeSection === id ? "page" : undefined}
+                    onClick={() => {
+                      setActiveSection(id);
+                      track("tab_changed", { tab: id });
+                    }}
+                  >
+                    <Icon size={18} aria-hidden="true" />
+                    <span>{id}</span>
+                  </button>
+                ))}
+              </nav>
+              <div className="privacy-note">
+                <ShieldCheck size={16} aria-hidden="true" />
+                <span>Files process locally in your browser.</span>
+              </div>
+            </aside>
+
+            <main className="main" id="main-content" tabIndex={-1}>
+              <header className="topbar">
+                <button
+                  type="button"
+                  className="sidebar-toggle"
+                  aria-label={
+                    sidebarOpen ? "Close navigation" : "Open navigation"
+                  }
+                  aria-expanded={sidebarOpen}
+                  aria-controls="dashboard-nav"
+                  onClick={() => setSidebarOpen((v) => !v)}
+                >
+                  <span aria-hidden="true">{sidebarOpen ? "✕" : "☰"}</span>
+                </button>
+                <div>
+                  <h1>Amazon PPC — What To Do</h1>
+                  <p>
+                    Upload your reports, then see exactly which keywords to{" "}
+                    <strong>push</strong>, <strong>hold</strong>, or{" "}
+                    <strong>cut</strong> — in plain English.
+                  </p>
+                </div>
+                <div className="topbar-actions">
+                  {!historyRaw && !targetingRaw && !result && (
                     <button
                       type="button"
-                      className="linklike"
-                      onClick={() => {
-                        clearStoredThresholds();
-                        setThresholds(defaultThresholds);
-                        setThresholdsRestored(false);
-                      }}
+                      className="button ghost sample-data-btn"
+                      onClick={loadSampleData}
+                      disabled={isLoading}
+                      title="Loads two example reports and runs the audit"
                     >
-                      Reset to defaults
+                      <FileSpreadsheet size={16} aria-hidden="true" />
+                      Try with sample data
                     </button>
-                  </div>
+                  )}
+                  <button
+                    className="button primary"
+                    onClick={runAnalysis}
+                    disabled={
+                      isLoading ||
+                      !historyRaw ||
+                      !targetingRaw ||
+                      hasInvalidThresholds(thresholds)
+                    }
+                    title={
+                      hasInvalidThresholds(thresholds)
+                        ? "Fix invalid threshold values to enable Analyze"
+                        : undefined
+                    }
+                  >
+                    {isLoading ? (
+                      <RefreshCw
+                        className="spin"
+                        size={17}
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <LineChart size={17} aria-hidden="true" />
+                    )}
+                    Analyze
+                  </button>
+                </div>
+              </header>
+
+              <section className="uploads-block" aria-label="Upload reports">
+                {result && (
+                  <button
+                    type="button"
+                    className="uploads-toggle"
+                    onClick={() => setShowUploads((v) => !v)}
+                    aria-expanded={showUploads}
+                  >
+                    {showUploads ? "▾" : "▸"} Reports loaded
+                    <small>
+                      History {number(historyInfo?.rows ?? 0)} · SP{" "}
+                      {number(targetingInfo?.rows ?? 0)} rows
+                      {result &&
+                        (() => {
+                          const total = result.summary.totalTargets;
+                          const matched = result.summary.matchedTargets;
+                          const pct =
+                            total > 0 ? Math.round((matched / total) * 100) : 0;
+                          return (
+                            <>
+                              {" "}
+                              · {number(matched)} of {number(total)} targets
+                              matched ({pct}%)
+                            </>
+                          );
+                        })()}
+                      {sbInfo ? " · SB ✓" : ""}
+                      {bulkInfo ? " · Bulk ✓" : ""}
+                      {acosInfo ? " · ACoS map ✓" : ""} — click to change files
+                      or settings
+                    </small>
+                  </button>
                 )}
-                <ThresholdPanel
+                {showUploads && (
+                  <>
+                    <div className="upload-grid">
+                      <FileDrop
+                        title="1 · History"
+                        description="Amazon Ads History export"
+                        tag="Required"
+                        info={historyInfo}
+                        busy={isLoading}
+                        onFile={ingest}
+                        slot="history"
+                      />
+                      <FileDrop
+                        title="2 · SP Targeting"
+                        description="Sponsored Products report"
+                        tag="Required"
+                        info={targetingInfo}
+                        busy={isLoading}
+                        onFile={ingest}
+                        slot="targeting"
+                      />
+                      <FileDrop
+                        title="3 · SB report"
+                        description="Sponsored Brands report"
+                        tag="Optional"
+                        info={sbInfo}
+                        busy={isLoading}
+                        onFile={ingest}
+                        slot="sb-targeting"
+                      />
+                      <FileDrop
+                        title="4 · Bulk file"
+                        description="Adds current bids"
+                        tag="Optional"
+                        info={bulkInfo}
+                        busy={isLoading}
+                        onFile={ingest}
+                        slot="bulk"
+                      />
+                      <FileDrop
+                        title="5 · ACoS map"
+                        description="Per-campaign targets"
+                        tag="Optional"
+                        info={acosInfo}
+                        busy={isLoading}
+                        onFile={ingest}
+                        slot="acos-map"
+                      />
+                    </div>
+                    <p className="upload-hint">
+                      Boxes 1 &amp; 2 are required; 3–5 are optional and add
+                      depth. Wrong box? Files are auto-detected, so it still
+                      works. CSV, XLS, XLSX all accepted.
+                    </p>
+                    <details className="settings-fold">
+                      <summary>
+                        Adjust targets &amp; thresholds (optional)
+                      </summary>
+                      {(thresholdsRestored ||
+                        isCustomThresholds(thresholds)) && (
+                        <div className="threshold-restored">
+                          <span>
+                            {thresholdsRestored
+                              ? "Using your saved thresholds."
+                              : "Custom thresholds active."}
+                          </span>
+                          <button
+                            type="button"
+                            className="linklike"
+                            onClick={() => {
+                              clearStoredThresholds();
+                              setThresholds(defaultThresholds);
+                              setThresholdsRestored(false);
+                            }}
+                          >
+                            Reset to defaults
+                          </button>
+                        </div>
+                      )}
+                      <ThresholdPanel
+                        thresholds={thresholds}
+                        onChange={updateThresholds}
+                      />
+                    </details>
+                  </>
+                )}
+              </section>
+
+              {error && (
+                <div className="error-banner">
+                  <AlertTriangle size={18} aria-hidden="true" />
+                  {error}
+                </div>
+              )}
+
+              {autoRouteNotice && (
+                <div className="auto-route-toast" role="status">
+                  <CheckCircle2 size={16} aria-hidden="true" />
+                  {autoRouteNotice}
+                </div>
+              )}
+
+              {sampleBannerVisible && (
+                <div className="sample-banner" role="status">
+                  <CheckCircle2 size={16} aria-hidden="true" />
+                  <span>Sample data loaded — explore freely.</span>
+                  <button
+                    type="button"
+                    onClick={() => setSampleBannerVisible(false)}
+                    aria-label="Dismiss sample-data banner"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+
+              {!result ? (
+                isLoading ? (
+                  <AnalysisSkeleton />
+                ) : (
+                  <EmptyState
+                    ready={!!historyRaw && !!targetingRaw}
+                    historyInfo={historyInfo}
+                    targetingInfo={targetingInfo}
+                  />
+                )
+              ) : (
+                <Dashboard
+                  activeSection={activeSection}
+                  result={result}
                   thresholds={thresholds}
-                  onChange={updateThresholds}
+                  bulkAvailable={!!bulkTargets && bulkTargets.length > 0}
+                  onExport={(kind) => handleExport(kind, result, bulkTargets)}
+                  onNavigate={(s, opts) => {
+                    setActiveSection(s);
+                    setFocusCampaign(opts?.focusCampaign ?? null);
+                  }}
+                  focusCampaign={focusCampaign}
                 />
-              </details>
-            </>
-          )}
-        </section>
-
-        {error && (
-          <div className="error-banner">
-            <AlertTriangle size={18} />
-            {error}
+              )}
+            </main>
           </div>
-        )}
-
-        {autoRouteNotice && (
-          <div className="auto-route-toast" role="status">
-            <CheckCircle2 size={16} />
-            {autoRouteNotice}
-          </div>
-        )}
-
-        {!result ? (
-          <EmptyState
-            ready={!!historyRaw && !!targetingRaw}
-            historyInfo={historyInfo}
-            targetingInfo={targetingInfo}
-          />
-        ) : (
-          <Dashboard
-            activeSection={activeSection}
-            result={result}
-            thresholds={thresholds}
-            bulkAvailable={!!bulkTargets && bulkTargets.length > 0}
-            onExport={(kind) => handleExport(kind, result, bulkTargets)}
-            onNavigate={(s, opts) => {
-              setActiveSection(s);
-              setFocusCampaign(opts?.focusCampaign ?? null);
+          <AppFooter />
+          <Tour
+            steps={TOUR_STEPS}
+            active={tourActive}
+            onComplete={() => {
+              markTourSeen();
+              setTourActive(false);
             }}
-            focusCampaign={focusCampaign}
+            onSkip={() => {
+              markTourSeen();
+              setTourActive(false);
+            }}
           />
-        )}
-      </main>
+          <ToastContainer />
+        </TourControlContext.Provider>
+      </TargetActionsContext.Provider>
+    </ToastProvider>
+  );
+}
+
+/**
+ * Site footer — links to Privacy / Terms / Changelog / Support.
+ * Lives outside <main> so it's always visible regardless of tab.
+ */
+function AppFooter() {
+  const year = new Date().getFullYear();
+  return (
+    <footer className="app-footer" role="contentinfo">
+      <div className="app-footer-left">
+        <strong>PPC Auditor</strong>
+        <span>Bid decisions made simple · v1.0</span>
+      </div>
+      <div className="app-footer-links" aria-label="Site links">
+        <a href="#/privacy">Privacy</a>
+        <a href="#/terms">Terms</a>
+        <a href="#/changelog">Changelog</a>
+        <a
+          href="mailto:support@ppc-auditor.example?subject=PPC%20Auditor%20support"
+          aria-label="Email support"
+        >
+          Support
+        </a>
+      </div>
+      <div className="app-footer-right">
+        <span>© {year}</span>
+      </div>
+    </footer>
+  );
+}
+
+/**
+ * Surfaces a one-time toast when the target-actions storage layer reports a
+ * failure (private mode, quota exceeded, etc). Mounted inside both providers.
+ */
+function StorageWarningSync() {
+  const { storageWarning } = useTargetActionsContext();
+  const toast = useToast();
+  const lastShownRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!storageWarning) return;
+    if (lastShownRef.current === storageWarning) return;
+    lastShownRef.current = storageWarning;
+    if (storageWarning === "quota") {
+      toast.warning(
+        "Browser storage is full — your acknowledgments aren't being saved.",
+        { duration: 8000 },
+      );
+    } else {
+      toast.warning(
+        "Browser storage is unavailable — your decisions won't survive a reload.",
+        { duration: 8000 },
+      );
+    }
+  }, [storageWarning, toast]);
+  return null;
+}
+
+/**
+ * Generic empty-state block — used by All Targets (zero-results filter),
+ * SB tab when no SB performance file is uploaded, etc.
+ */
+function EmptyView({
+  icon,
+  title,
+  body,
+  primaryAction,
+  secondaryAction,
+}: {
+  icon?: ReactNode;
+  title: string;
+  body?: ReactNode;
+  primaryAction?: { label: string; onClick: () => void };
+  secondaryAction?: { label: string; onClick: () => void };
+}) {
+  return (
+    <div className="empty-view" role="status">
+      {icon && (
+        <div className="empty-view-icon" aria-hidden="true">
+          {icon}
+        </div>
+      )}
+      <h3>{title}</h3>
+      {body && <p>{body}</p>}
+      {(primaryAction || secondaryAction) && (
+        <div className="empty-view-actions">
+          {primaryAction && (
+            <button
+              type="button"
+              className="button primary"
+              onClick={primaryAction.onClick}
+            >
+              {primaryAction.label}
+            </button>
+          )}
+          {secondaryAction && (
+            <button
+              type="button"
+              className="button ghost"
+              onClick={secondaryAction.onClick}
+            >
+              {secondaryAction.label}
+            </button>
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+/**
+ * Skeleton shown while Analyze is running. Replaces the right-panel
+ * "Add boxes 1 & 2…" empty state with an animated placeholder so the user
+ * gets immediate feedback their click registered.
+ */
+function AnalysisSkeleton() {
+  return (
+    <section
+      className="analysis-skeleton"
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+      aria-label="Analyzing your reports…"
+    >
+      <div className="analysis-skeleton-header">
+        <div className="skel-circle" />
+        <div
+          style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10 }}
+        >
+          <div className="skel-bar skel-bar-lg" />
+          <div className="skel-bar skel-bar-md" />
+          <div className="skel-bar skel-bar-sm" />
+        </div>
+      </div>
+      <div className="analysis-skeleton-kpis">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="skel-kpi">
+            <div className="skel-bar skel-bar-sm" />
+            <div className="skel-bar skel-bar-lg" />
+            <div className="skel-bar skel-bar-sm" />
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -697,7 +1185,11 @@ function FileDrop({
           event.target.value = "";
         }}
       />
-      {info ? <CheckCircle2 size={20} /> : <UploadCloud size={20} />}
+      {info ? (
+        <CheckCircle2 size={20} aria-hidden="true" />
+      ) : (
+        <UploadCloud size={20} aria-hidden="true" />
+      )}
       <span>
         <strong>
           {title}
@@ -777,7 +1269,7 @@ function ThresholdPanel({
   return (
     <div className="threshold-panel">
       <div className="threshold-header">
-        <SlidersHorizontal size={18} />
+        <SlidersHorizontal size={18} aria-hidden="true" />
         <strong>Thresholds</strong>
       </div>
       <div className="threshold-grid">
@@ -927,6 +1419,7 @@ function KpiSelector({
                 type="checkbox"
                 checked={on}
                 onChange={() => toggle(opt)}
+                aria-label={`${opt.label} (${opt.direction === "lower" ? "lower is better" : "higher is better"})`}
               />
               <span className="kpi-pill-label">
                 {opt.label}{" "}
@@ -979,7 +1472,7 @@ function EmptyState({
   return (
     <section className="empty-state">
       <div className="empty-copy">
-        <FileSpreadsheet size={42} />
+        <FileSpreadsheet size={42} aria-hidden="true" />
         <h2>
           {ready
             ? "Ready when you are — click Analyze."
@@ -994,16 +1487,20 @@ function EmptyState({
       </div>
       <div className="empty-checklist">
         <div>
-          <CheckCircle2 size={18} /> 1 · Bid-Change History export (required)
+          <CheckCircle2 size={18} aria-hidden="true" /> 1 · Bid-Change History
+          export (required)
         </div>
         <div>
-          <CheckCircle2 size={18} /> 2 · SP Targeting report (required)
+          <CheckCircle2 size={18} aria-hidden="true" /> 2 · SP Targeting report
+          (required)
         </div>
         <div>
-          <CheckCircle2 size={18} /> 3–5 · SB / Bulk / ACoS map (optional)
+          <CheckCircle2 size={18} aria-hidden="true" /> 3–5 · SB / Bulk / ACoS
+          map (optional)
         </div>
         <div>
-          <CheckCircle2 size={18} /> Everything runs locally in your browser
+          <CheckCircle2 size={18} aria-hidden="true" /> Everything runs locally
+          in your browser
         </div>
       </div>
     </section>
@@ -1027,6 +1524,31 @@ function Dashboard({
   onNavigate: (s: Section, opts?: { focusCampaign?: string }) => void;
   focusCampaign: string | null;
 }) {
+  const toast = useToast();
+  // Wrap onExport with toast feedback so EVERY download surfaces a confirmation.
+  const onExportWithToast = useCallback(
+    (kind: string) => {
+      onExport(kind);
+      track("export_clicked", { kind });
+      const rows = result.auditRows;
+      const actionableCount = rows.filter(
+        (r) =>
+          r.recommendation === "Increase bid" ||
+          r.recommendation === "Reduce bid",
+      ).length;
+      const messages: Record<string, string> = {
+        actions: `Action list downloaded · ${number(actionableCount)} ${actionableCount === 1 ? "row" : "rows"}`,
+        executive: "Executive Summary downloaded",
+        "amazon-bulk": "Amazon Bulk Update downloaded",
+        full: `Full CSV downloaded · ${number(rows.length)} ${rows.length === 1 ? "row" : "rows"}`,
+        campaigns: `Campaign summary downloaded · ${number(result.campaignSummary.length)} ${result.campaignSummary.length === 1 ? "campaign" : "campaigns"}`,
+        unmatched: `Unmatched rows downloaded · ${number(result.unmatchedPerformanceRows.length)} ${result.unmatchedPerformanceRows.length === 1 ? "row" : "rows"}`,
+      };
+      const msg = messages[kind] ?? "File downloaded";
+      toast.success(msg);
+    },
+    [onExport, result, toast],
+  );
   return (
     <div className="dashboard">
       {activeSection === "Action Plan" && (
@@ -1034,7 +1556,7 @@ function Dashboard({
           result={result}
           thresholds={thresholds}
           bulkAvailable={bulkAvailable}
-          onExport={onExport}
+          onExport={onExportWithToast}
           onNavigate={(s) => onNavigate(s)}
         />
       )}
@@ -1044,7 +1566,7 @@ function Dashboard({
           <KpiGrid result={result} />
           <AllTargets
             result={result}
-            onExport={onExport}
+            onExport={onExportWithToast}
             onNavigate={onNavigate}
             lookbackDays={thresholds.lookbackDays}
             targetAcos={thresholds.targetAcos}
@@ -1055,7 +1577,7 @@ function Dashboard({
         <CampaignView
           result={result}
           thresholds={thresholds}
-          onExport={onExport}
+          onExport={onExportWithToast}
           focusCampaign={focusCampaign}
           onNavigate={onNavigate}
         />
@@ -1069,10 +1591,11 @@ function Dashboard({
       )}
       {activeSection === "Sponsored Brands" && <SBView result={result} />}
       {activeSection === "Data Quality" && (
-        <DataQuality result={result} onExport={onExport} />
+        <DataQuality result={result} onExport={onExportWithToast} />
       )}
       {activeSection === "Help" && (
         <>
+          <HelpTopActions />
           <Methodology result={result} />
           <section className="panel full method-data-quality-pointer">
             <div className="panel-header">
@@ -1087,13 +1610,37 @@ function Dashboard({
                 className="button ghost"
                 onClick={() => onNavigate("Data Quality")}
               >
-                <ShieldCheck size={16} />
+                <ShieldCheck size={16} aria-hidden="true" />
                 Open Data Quality →
               </button>
             </div>
           </section>
         </>
       )}
+    </div>
+  );
+}
+
+function HelpTopActions() {
+  const tour = useTourControl();
+  if (!tour) return null;
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "flex-end",
+        padding: "6px 4px 0",
+      }}
+    >
+      <button
+        type="button"
+        className="tour-restart-btn"
+        onClick={tour.restart}
+        aria-label="Restart the first-run product tour"
+      >
+        <HelpCircle size={14} aria-hidden="true" />
+        Restart product tour
+      </button>
     </div>
   );
 }
@@ -1812,6 +2359,7 @@ function BidTimelineChart({
             min={earliest}
             max={latest}
             onChange={(e) => setFromDate(e.target.value)}
+            aria-label="Bid timeline start date"
           />
         </label>
         <label>
@@ -1822,6 +2370,7 @@ function BidTimelineChart({
             min={earliest}
             max={latest}
             onChange={(e) => setToDate(e.target.value)}
+            aria-label="Bid timeline end date"
           />
         </label>
         <button
@@ -2234,11 +2783,53 @@ function BidDecisionCard({
   onNavigate?: (s: Section, opts?: { focusCampaign?: string }) => void;
 }) {
   const [showChart, setShowChart] = useState(false);
-  const [actionState, setActionState] = useState<
-    "none" | "snoozed" | "acknowledged"
-  >("none");
   const [showAllDates, setShowAllDates] = useState(false);
   const [showRawData, setShowRawData] = useState(false);
+  const { getAction, setAction, clearAction } = useTargetActionsContext();
+  const toast = useToast();
+  const actionKey = useMemo(() => targetActionKey(row), [row]);
+  const applyAction = useCallback(
+    (kind: TargetActionKind) => {
+      setAction(actionKey, kind);
+      const verdictBucket =
+        row.recommendation === "Increase bid"
+          ? "push"
+          : row.recommendation === "Reduce bid" ||
+              row.recommendation === "Pause / review"
+            ? "cut"
+            : "hold";
+      track("action_taken", { action: kind, verdict: verdictBucket });
+      const message =
+        kind === "ack"
+          ? "Marked acknowledged"
+          : kind === "snooze"
+            ? "Snoozed for 7 days"
+            : "Hidden";
+      toast.info(message, {
+        undo: { onClick: () => clearAction(actionKey) },
+      });
+    },
+    [setAction, clearAction, toast, actionKey, row.recommendation],
+  );
+  const actionRecord = getAction(actionKey);
+  const actionState: "none" | "snoozed" | "acknowledged" | "hidden" =
+    actionRecord?.action === "snooze"
+      ? "snoozed"
+      : actionRecord?.action === "ack"
+        ? "acknowledged"
+        : actionRecord?.action === "hide"
+          ? "hidden"
+          : "none";
+  const snoozedUntilText = (() => {
+    if (actionState !== "snoozed" || !actionRecord?.snoozeUntil) return null;
+    const d = new Date(actionRecord.snoozeUntil);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  })();
 
   const badge = CATEGORY_BADGE[row.category] ?? {
     cls: "muted",
@@ -2342,29 +2933,71 @@ function BidDecisionCard({
           </div>
           <div className="bdc-actions">
             {actionState === "snoozed" && (
-              <span className="bdc-action-state">Snoozed · 7d</span>
+              <>
+                <span className="bdc-action-state">
+                  Snoozed
+                  {snoozedUntilText ? ` until ${snoozedUntilText}` : " · 7d"}
+                </span>
+                <button
+                  type="button"
+                  className="bdc-btn bdc-btn-ghost"
+                  onClick={() => clearAction(actionKey)}
+                  aria-label="Undo snooze"
+                >
+                  Undo
+                </button>
+              </>
             )}
             {actionState === "acknowledged" && (
-              <span className="bdc-action-state bdc-action-state-ack">
-                ✓ Acknowledged
-              </span>
+              <>
+                <span className="bdc-action-state bdc-action-state-ack">
+                  ✓ Acknowledged
+                </span>
+                <button
+                  type="button"
+                  className="bdc-btn bdc-btn-ghost"
+                  onClick={() => clearAction(actionKey)}
+                  aria-label="Undo acknowledge"
+                >
+                  Undo
+                </button>
+              </>
+            )}
+            {actionState === "hidden" && (
+              <>
+                <span className="bdc-action-state bdc-action-state-hidden">
+                  Hidden
+                </span>
+                <button
+                  type="button"
+                  className="bdc-btn bdc-btn-ghost"
+                  onClick={() => clearAction(actionKey)}
+                  aria-label="Undo hide"
+                >
+                  Undo
+                </button>
+              </>
             )}
             {actionState === "none" && (
               <>
-                <button type="button" className="bdc-btn bdc-btn-ghost">
+                <button
+                  type="button"
+                  className="bdc-btn bdc-btn-ghost"
+                  onClick={() => applyAction("hide")}
+                >
                   Hide
                 </button>
                 <button
                   type="button"
                   className="bdc-btn bdc-btn-ghost"
-                  onClick={() => setActionState("snoozed")}
+                  onClick={() => applyAction("snooze")}
                 >
                   Snooze 7d
                 </button>
                 <button
                   type="button"
                   className="bdc-btn bdc-btn-primary"
-                  onClick={() => setActionState("acknowledged")}
+                  onClick={() => applyAction("ack")}
                 >
                   Acknowledge
                 </button>
@@ -3030,7 +3663,7 @@ function ActionPlan({
         </div>
         <div className="plan-export-stack">
           <button className="button ghost" onClick={() => onExport("actions")}>
-            <Download size={16} />
+            <Download size={16} aria-hidden="true" />
             Download action list (CSV)
           </button>
           <button
@@ -3038,7 +3671,7 @@ function ActionPlan({
             onClick={() => onExport("executive")}
             title="One-page executive summary. Open in browser, then Ctrl+P → Save as PDF."
           >
-            <Download size={16} />
+            <Download size={16} aria-hidden="true" />
             Executive Summary (HTML)
           </button>
           {/* G12: Amazon Bulk Operations export. Disabled when Box 4 missing. */}
@@ -3052,7 +3685,7 @@ function ActionPlan({
                 : "Upload a Bulk Operations file in Box 4 to enable this export."
             }
           >
-            <Download size={16} />
+            <Download size={16} aria-hidden="true" />
             Amazon Bulk Update (CSV)
           </button>
         </div>
@@ -3182,6 +3815,8 @@ const ALL_FILTERS: Array<{
   },
 ];
 
+type ActionStateView = "default" | "acked" | "snoozed" | "hidden";
+
 function AllTargets({
   result,
   onExport,
@@ -3196,21 +3831,60 @@ function AllTargets({
   targetAcos?: number;
 }) {
   const [filter, setFilter] = useState("all");
-  // Compute counts ONCE per audit-rows change — was O(filters × rows) per render.
+  const [actionView, setActionView] = useState<ActionStateView>("default");
+  const {
+    actions,
+    counts: actionCounts,
+    clearByKind,
+  } = useTargetActionsContext();
+
+  // Look up an audit row's current action state (if any) using the persisted map.
+  const actionStateOf = useCallback(
+    (row: AuditRow): "ack" | "snooze" | "hide" | "none" => {
+      const key = targetActionKey(row);
+      return actions[key]?.action ?? "none";
+    },
+    [actions],
+  );
+
+  // The "default" view excludes hidden + currently-snoozed rows.
+  // The "acked" / "snoozed" / "hidden" views show ONLY rows in that state.
+  const visibilityTest = useCallback(
+    (row: AuditRow): boolean => {
+      const s = actionStateOf(row);
+      switch (actionView) {
+        case "acked":
+          return s === "ack";
+        case "snoozed":
+          return s === "snooze";
+        case "hidden":
+          return s === "hide";
+        case "default":
+        default:
+          return s !== "hide" && s !== "snooze";
+      }
+    },
+    [actionStateOf, actionView],
+  );
+
+  // Compute counts ONCE per audit-rows change AND when the action map changes.
+  // Counts reflect what would be visible in the current actionView so the chip
+  // counts always match the table contents.
   const counts = useMemo(() => {
     const out: Record<string, number> = {};
     for (const f of ALL_FILTERS) {
       let n = 0;
-      for (const r of result.auditRows) if (f.test(r)) n++;
+      for (const r of result.auditRows) if (f.test(r) && visibilityTest(r)) n++;
       out[f.id] = n;
     }
     return out;
-  }, [result.auditRows]);
+  }, [result.auditRows, visibilityTest]);
+
   // Memoize the filtered row list so ActionTable's downstream memo doesn't bust.
   const rows = useMemo(() => {
     const active = ALL_FILTERS.find((f) => f.id === filter) ?? ALL_FILTERS[0];
-    return result.auditRows.filter(active.test);
-  }, [result.auditRows, filter]);
+    return result.auditRows.filter((r) => active.test(r) && visibilityTest(r));
+  }, [result.auditRows, filter, visibilityTest]);
   return (
     <section className="panel full">
       <div className="panel-header">
@@ -3223,15 +3897,85 @@ function AllTargets({
         </div>
         <div className="export-row">
           <button className="button ghost" onClick={() => onExport("full")}>
-            <Download size={16} />
+            <Download size={16} aria-hidden="true" />
             Full CSV
           </button>
           <button className="button ghost" onClick={() => onExport("actions")}>
-            <Download size={16} />
+            <Download size={16} aria-hidden="true" />
             Actions
           </button>
         </div>
       </div>
+      {actionCounts.total > 0 && (
+        <div
+          className="action-state-bar"
+          role="region"
+          aria-label="Your decisions"
+        >
+          <span className="action-state-bar-label">Your decisions:</span>
+          <button
+            type="button"
+            className={`fchip fchip-state${actionView === "default" ? " active" : ""}`}
+            onClick={() => setActionView("default")}
+            aria-pressed={actionView === "default"}
+          >
+            Active
+          </button>
+          {actionCounts.ack > 0 && (
+            <button
+              type="button"
+              className={`fchip fchip-state fchip-state-ack${actionView === "acked" ? " active" : ""}`}
+              onClick={() =>
+                setActionView(actionView === "acked" ? "default" : "acked")
+              }
+              aria-pressed={actionView === "acked"}
+            >
+              Acknowledged <em>{number(actionCounts.ack)}</em>
+            </button>
+          )}
+          {actionCounts.snooze > 0 && (
+            <button
+              type="button"
+              className={`fchip fchip-state fchip-state-snooze${actionView === "snoozed" ? " active" : ""}`}
+              onClick={() =>
+                setActionView(actionView === "snoozed" ? "default" : "snoozed")
+              }
+              aria-pressed={actionView === "snoozed"}
+            >
+              Snoozed <em>{number(actionCounts.snooze)}</em>
+            </button>
+          )}
+          {actionCounts.hide > 0 && (
+            <button
+              type="button"
+              className={`fchip fchip-state fchip-state-hide${actionView === "hidden" ? " active" : ""}`}
+              onClick={() =>
+                setActionView(actionView === "hidden" ? "default" : "hidden")
+              }
+              aria-pressed={actionView === "hidden"}
+            >
+              Hidden <em>{number(actionCounts.hide)}</em>
+            </button>
+          )}
+          <span className="action-state-bar-divider" aria-hidden="true">
+            ·
+          </span>
+          <button
+            type="button"
+            className="link-button"
+            onClick={() => {
+              if (actionView === "acked") clearByKind("ack");
+              else if (actionView === "snoozed") clearByKind("snooze");
+              else if (actionView === "hidden") clearByKind("hide");
+              setActionView("default");
+            }}
+            disabled={actionView === "default"}
+            aria-label={`Clear all ${actionView}`}
+          >
+            Clear all in view
+          </button>
+        </div>
+      )}
       <div className="filter-chips">
         {ALL_FILTERS.filter((f) => f.kind === "category").map((f) => (
           <button
@@ -3373,8 +4117,96 @@ function gradeFor(score: number) {
   return { label: "Poor", tone: "bad" };
 }
 
-const PAGE_SIZE = 100;
 const COMPACT_LIMIT = 18;
+
+const ACTION_TABLE_COLUMNS = [
+  "Priority",
+  "Action",
+  "Reason",
+  "Campaign",
+  "Target",
+  "Spend",
+  "Sales",
+  "Orders",
+  "ACoS",
+  "Bid",
+  "Changes",
+  "Confidence",
+  "Why?",
+] as const;
+
+function ActionTableHeader() {
+  return (
+    <div role="row" className="audit-row audit-row-head">
+      {ACTION_TABLE_COLUMNS.map((label) => (
+        <div role="columnheader" key={label}>
+          {label}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ActionRowCells({
+  row,
+  isOpen,
+  onToggle,
+}: {
+  row: AuditRow;
+  isOpen: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div role="row" className={`audit-row${isOpen ? " row-open" : ""}`}>
+      <div role="cell">
+        <Badge tone={priorityTone(row.priority)}>{row.priority}</Badge>
+      </div>
+      <div role="cell">
+        <strong>{row.recommendation}</strong>
+        <small>{row.category}</small>
+      </div>
+      <div role="cell" className="reason-cell">
+        {row.reason}
+      </div>
+      <div role="cell">
+        <span>{row.campaign}</span>
+        {row.adGroup !== row.campaign && <small>{row.adGroup}</small>}
+      </div>
+      <div role="cell">
+        <span>{row.targeting}</span>
+        <small>{row.matchType}</small>
+      </div>
+      <div role="cell">{money2(row.spend)}</div>
+      <div role="cell">{money2(row.sales)}</div>
+      <div role="cell">{number(row.orders)}</div>
+      <div role="cell">{percent(row.acos)}</div>
+      <div role="cell">
+        <span>
+          {money2(row.previousBid)} → {money2(row.latestBid)}
+        </span>
+        <small>{percent(row.bidChangePct)}</small>
+      </div>
+      <div role="cell">
+        <span>{row.bidChanges}</span>
+        <small>{dateShort(row.lastBidChangeDate)}</small>
+      </div>
+      <div role="cell">
+        <Badge tone="slate">{row.confidence}</Badge>
+        <small>{row.matchLevel}</small>
+      </div>
+      <div role="cell">
+        <button
+          type="button"
+          className="why-btn"
+          aria-expanded={isOpen}
+          onClick={onToggle}
+        >
+          {isOpen ? "Hide" : "Why?"}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function ActionTable({
   rows,
@@ -3396,21 +4228,12 @@ function ActionTable({
     "priorityScore" | "spend" | "sales" | "acos" | "bidChanges"
   >("priorityScore");
   const [openRow, setOpenRow] = useState<string | null>(null);
-  const [pageCount, setPageCount] = useState(1);
 
   // Memoize the category dropdown options — was O(rows) on every render.
   const categoryOptions = useMemo(
     () => unique(rows.map((row) => row.category)),
     [rows],
   );
-
-  // Reset pagination when filters/sort/rows change so we always show top-N first.
-  const filterSig = `${category}|${priority}|${sort}|${search.trim().toLowerCase()}`;
-  const lastSigRef = useRef(filterSig);
-  if (lastSigRef.current !== filterSig) {
-    lastSigRef.current = filterSig;
-    if (pageCount !== 1) setPageCount(1);
-  }
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -3426,186 +4249,237 @@ function ActionTable({
       .sort((a, b) => Number(b[sort] ?? 0) - Number(a[sort] ?? 0));
   }, [category, priority, rows, search, sort]);
 
-  // Pagination — cap visible rows to avoid rendering thousands of <tr> cells at once.
-  const visibleCount = compact
-    ? COMPACT_LIMIT
-    : Math.min(filtered.length, PAGE_SIZE * pageCount);
-  const visibleRows = useMemo(
-    () => filtered.slice(0, visibleCount),
-    [filtered, visibleCount],
+  // Reset open row if it filtered out
+  useEffect(() => {
+    if (!openRow) return;
+    const stillVisible = filtered.some(
+      (row) =>
+        `${row.campaign}-${row.adGroup}-${row.targeting}-${row.matchType}` ===
+        openRow,
+    );
+    if (!stillVisible) setOpenRow(null);
+  }, [filtered, openRow]);
+
+  // Virtualization (only when not compact and we have rows)
+  const parentRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: compact ? 0 : filtered.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 56,
+    overscan: 8,
+    measureElement:
+      typeof window !== "undefined" &&
+      navigator.userAgent.indexOf("Firefox") === -1
+        ? (element) => element?.getBoundingClientRect().height
+        : undefined,
+  });
+
+  // When an item toggles open/closed, force the virtualizer to remeasure that index
+  // (otherwise the cached row height stays at ~56px and the WhyCard overlaps).
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [openRow, rowVirtualizer]);
+
+  const toolbar = !compact && (
+    <div className="table-tools">
+      <label className="search-box">
+        <Search size={16} aria-hidden="true" />
+        <input
+          type="search"
+          aria-label="Search campaign, target, or reason"
+          placeholder="Search campaign, target, reason"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+      </label>
+      <label>
+        <Filter size={15} aria-hidden="true" />
+        <span className="visually-hidden">Category</span>
+        <select
+          aria-label="Filter by category"
+          value={category}
+          onChange={(event) => setCategory(event.target.value)}
+        >
+          <option>All</option>
+          {categoryOptions.map((item) => (
+            <option key={item}>{item}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Priority
+        <select
+          aria-label="Filter by priority"
+          value={priority}
+          onChange={(event) => setPriority(event.target.value)}
+        >
+          <option>All</option>
+          {(["Critical", "High", "Medium", "Low", "Watch"] as Priority[]).map(
+            (item) => (
+              <option key={item}>{item}</option>
+            ),
+          )}
+        </select>
+      </label>
+      <label>
+        Sort
+        <select
+          aria-label="Sort by"
+          value={sort}
+          onChange={(event) => setSort(event.target.value as typeof sort)}
+        >
+          <option value="priorityScore">Priority</option>
+          <option value="spend">Spend</option>
+          <option value="sales">Sales</option>
+          <option value="acos">ACoS</option>
+          <option value="bidChanges">Bid changes</option>
+        </select>
+      </label>
+    </div>
   );
+
+  // Compact mode: render at most COMPACT_LIMIT rows, no virtualization needed.
+  if (compact) {
+    const visibleRows = filtered.slice(0, COMPACT_LIMIT);
+    return (
+      <div>
+        <div className="table-wrap">
+          <div
+            className="audit-table"
+            role="table"
+            aria-rowcount={visibleRows.length + 1}
+          >
+            <div role="rowgroup" className="audit-thead">
+              <ActionTableHeader />
+            </div>
+            <div role="rowgroup" className="audit-tbody">
+              {visibleRows.map((row) => {
+                const rowKey = `${row.campaign}-${row.adGroup}-${row.targeting}-${row.matchType}`;
+                const isOpen = openRow === rowKey;
+                return (
+                  <div key={rowKey} className="audit-row-wrap">
+                    <ActionRowCells
+                      row={row}
+                      isOpen={isOpen}
+                      onToggle={() => setOpenRow(isOpen ? null : rowKey)}
+                    />
+                    {isOpen && (
+                      <div role="row" className="why-detail">
+                        <div role="cell">
+                          <WhyCard
+                            row={row}
+                            lookbackDays={lookbackDays}
+                            targetAcos={targetAcos}
+                            onNavigate={onNavigate}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Full mode: virtualize ALL filtered rows (no more pagination).
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const totalSize = rowVirtualizer.getTotalSize();
 
   return (
     <div>
-      {!compact && (
-        <div className="table-tools">
-          <label className="search-box">
-            <Search size={16} />
-            <input
-              type="search"
-              aria-label="Search campaign, target, or reason"
-              placeholder="Search campaign, target, reason"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-          </label>
-          <label>
-            <Filter size={15} />
-            <span className="visually-hidden">Category</span>
-            <select
-              aria-label="Filter by category"
-              value={category}
-              onChange={(event) => setCategory(event.target.value)}
+      {toolbar}
+      <div
+        ref={parentRef}
+        className="table-wrap virtualized-table-wrap"
+        role="region"
+        aria-label="All targets — scrollable table"
+      >
+        <div
+          className="audit-table"
+          role="table"
+          aria-rowcount={filtered.length + 1}
+        >
+          <div role="rowgroup" className="audit-thead">
+            <ActionTableHeader />
+          </div>
+          {filtered.length === 0 ? (
+            <div role="rowgroup" className="audit-tbody">
+              <EmptyView
+                icon={<Search size={32} aria-hidden="true" />}
+                title="No targets match your filters"
+                body="Try clearing the search box, expanding the category, or switching the priority filter."
+                primaryAction={{
+                  label: "Clear filters",
+                  onClick: () => {
+                    setSearch("");
+                    setCategory("All");
+                    setPriority("All");
+                  },
+                }}
+              />
+            </div>
+          ) : (
+            <div
+              role="rowgroup"
+              className="audit-tbody"
+              style={{
+                height: `${totalSize}px`,
+                position: "relative",
+                width: "100%",
+              }}
             >
-              <option>All</option>
-              {categoryOptions.map((item) => (
-                <option key={item}>{item}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Priority
-            <select
-              aria-label="Filter by priority"
-              value={priority}
-              onChange={(event) => setPriority(event.target.value)}
-            >
-              <option>All</option>
-              {(
-                ["Critical", "High", "Medium", "Low", "Watch"] as Priority[]
-              ).map((item) => (
-                <option key={item}>{item}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Sort
-            <select
-              aria-label="Sort by"
-              value={sort}
-              onChange={(event) => setSort(event.target.value as typeof sort)}
-            >
-              <option value="priorityScore">Priority</option>
-              <option value="spend">Spend</option>
-              <option value="sales">Sales</option>
-              <option value="acos">ACoS</option>
-              <option value="bidChanges">Bid changes</option>
-            </select>
-          </label>
+              {virtualItems.map((vRow) => {
+                const row = filtered[vRow.index];
+                if (!row) return null;
+                const rowKey = `${row.campaign}-${row.adGroup}-${row.targeting}-${row.matchType}`;
+                const isOpen = openRow === rowKey;
+                return (
+                  <div
+                    key={rowKey}
+                    ref={rowVirtualizer.measureElement}
+                    data-index={vRow.index}
+                    className={`audit-row-wrap${isOpen ? " row-open" : ""}`}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${vRow.start}px)`,
+                    }}
+                  >
+                    <ActionRowCells
+                      row={row}
+                      isOpen={isOpen}
+                      onToggle={() => setOpenRow(isOpen ? null : rowKey)}
+                    />
+                    {isOpen && (
+                      <div role="row" className="why-detail">
+                        <div role="cell">
+                          <WhyCard
+                            row={row}
+                            lookbackDays={lookbackDays}
+                            targetAcos={targetAcos}
+                            onNavigate={onNavigate}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
-      )}
-      <div className="table-wrap">
-        <table className="audit-table">
-          <thead>
-            <tr>
-              <th>Priority</th>
-              <th>Action</th>
-              <th>Reason</th>
-              <th>Campaign</th>
-              <th>Target</th>
-              <th>Spend</th>
-              <th>Sales</th>
-              <th>Orders</th>
-              <th>ACoS</th>
-              <th>Bid</th>
-              <th>Changes</th>
-              <th>Confidence</th>
-              <th>Why?</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visibleRows.map((row) => {
-              const rowKey = `${row.campaign}-${row.adGroup}-${row.targeting}-${row.matchType}`;
-              const isOpen = openRow === rowKey;
-              return (
-                <Fragment key={rowKey}>
-                  <tr className={`audit-row${isOpen ? " row-open" : ""}`}>
-                    <td>
-                      <Badge tone={priorityTone(row.priority)}>
-                        {row.priority}
-                      </Badge>
-                    </td>
-                    <td>
-                      <strong>{row.recommendation}</strong>
-                      <small>{row.category}</small>
-                    </td>
-                    <td className="reason-cell">{row.reason}</td>
-                    <td>
-                      <span>{row.campaign}</span>
-                      {row.adGroup !== row.campaign && (
-                        <small>{row.adGroup}</small>
-                      )}
-                    </td>
-                    <td>
-                      <span>{row.targeting}</span>
-                      <small>{row.matchType}</small>
-                    </td>
-                    <td>{money2(row.spend)}</td>
-                    <td>{money2(row.sales)}</td>
-                    <td>{number(row.orders)}</td>
-                    <td>{percent(row.acos)}</td>
-                    <td>
-                      <span>
-                        {money2(row.previousBid)} → {money2(row.latestBid)}
-                      </span>
-                      <small>{percent(row.bidChangePct)}</small>
-                    </td>
-                    <td>
-                      <span>{row.bidChanges}</span>
-                      <small>{dateShort(row.lastBidChangeDate)}</small>
-                    </td>
-                    <td>
-                      <Badge tone="slate">{row.confidence}</Badge>
-                      <small>{row.matchLevel}</small>
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="why-btn"
-                        aria-expanded={isOpen}
-                        onClick={() => setOpenRow(isOpen ? null : rowKey)}
-                      >
-                        {isOpen ? "Hide" : "Why?"}
-                      </button>
-                    </td>
-                  </tr>
-                  {isOpen && (
-                    <tr className="why-detail">
-                      <td colSpan={13}>
-                        <WhyCard
-                          row={row}
-                          lookbackDays={lookbackDays}
-                          targetAcos={targetAcos}
-                          onNavigate={onNavigate}
-                        />
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
       </div>
-      {!compact && filtered.length > visibleCount && (
+      {filtered.length > 0 && (
         <div className="table-pager">
           <span className="table-pager-info">
-            Showing {number(visibleCount)} of {number(filtered.length)} targets
+            Showing all {number(filtered.length)} targets
           </span>
-          <button
-            type="button"
-            className="button ghost"
-            onClick={() => setPageCount((p) => p + 1)}
-          >
-            Load next {Math.min(PAGE_SIZE, filtered.length - visibleCount)}
-          </button>
-          <button
-            type="button"
-            className="button ghost"
-            onClick={() => setPageCount(Math.ceil(filtered.length / PAGE_SIZE))}
-          >
-            Load all
-          </button>
         </div>
       )}
     </div>
@@ -4023,7 +4897,7 @@ function ProductsView({
         {/* Filter bar */}
         <div className="product-filter-bar">
           <label className="search-box">
-            <Search size={14} />
+            <Search size={14} aria-hidden="true" />
             <input
               type="search"
               aria-label="Search product"
@@ -4050,6 +4924,7 @@ function ProductsView({
               type="checkbox"
               checked={issuesOnly}
               onChange={(e) => setIssuesOnly(e.target.checked)}
+              aria-label="Show only products with issues"
             />
             Issues only
           </label>
@@ -4425,7 +5300,7 @@ function CampaignView({
             className="button ghost"
             onClick={() => onExport("campaigns")}
           >
-            <Download size={16} />
+            <Download size={16} aria-hidden="true" />
             Campaign CSV
           </button>
         </div>
@@ -4657,7 +5532,7 @@ function DataQuality({
             className="button ghost"
             onClick={() => onExport("unmatched")}
           >
-            <Download size={16} />
+            <Download size={16} aria-hidden="true" />
             Unmatched
           </button>
         </div>
@@ -4687,7 +5562,7 @@ function DataQuality({
         <div className="warning-stack">
           {result.warnings.map((warning) => (
             <div className="insight warning" key={warning}>
-              <AlertTriangle size={17} />
+              <AlertTriangle size={17} aria-hidden="true" />
               {warning}
             </div>
           ))}
@@ -4747,7 +5622,7 @@ function SBView({ result }: { result: AnalysisResult }) {
           </div>
         </div>
         <div className="sb-empty">
-          <Flame size={36} />
+          <Flame size={36} aria-hidden="true" />
           <h3>
             Upload the Sponsored Brands performance report to turn this on.
           </h3>
@@ -4840,7 +5715,7 @@ function SBView({ result }: { result: AnalysisResult }) {
           const pctRound = Math.round(pct * 100);
           return (
             <div className="insight warning sb-sparse-notice">
-              <AlertTriangle size={16} />
+              <AlertTriangle size={16} aria-hidden="true" />
               <span>
                 Heads up — only {pctRound}% of SB keywords matched bid history.
                 SB results will be sparse. Upload a wider date-range History
@@ -4852,7 +5727,7 @@ function SBView({ result }: { result: AnalysisResult }) {
         <div className="insight-list">
           {sb.notes.map((n) => (
             <div className="insight warning" key={n}>
-              <AlertTriangle size={16} />
+              <AlertTriangle size={16} aria-hidden="true" />
               {n}
             </div>
           ))}
