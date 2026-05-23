@@ -78,7 +78,7 @@ import {
   auditRowToExport,
   campaignToExport,
   downloadText,
-  executiveSummaryMarkdown,
+  executiveSummaryHtml,
   toCsv,
 } from "./lib/export";
 import { buildAmazonBulkExport } from "./lib/export-amazon-bulk";
@@ -89,6 +89,7 @@ type Section =
   | "Campaigns"
   | "Products"
   | "Sponsored Brands"
+  | "Data Quality"
   | "Help";
 
 const sections: Array<{ id: Section; icon: typeof Activity }> = [
@@ -97,6 +98,7 @@ const sections: Array<{ id: Section; icon: typeof Activity }> = [
   { id: "Campaigns", icon: BarChart3 },
   { id: "Products", icon: Package },
   { id: "Sponsored Brands", icon: Flame },
+  { id: "Data Quality", icon: ShieldCheck },
   { id: "Help", icon: HelpCircle },
 ];
 
@@ -269,6 +271,8 @@ export default function App() {
   }, [thresholds]);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [activeSection, setActiveSection] = useState<Section>("Action Plan");
+  // F-P2-06: holds the campaign name to scroll/expand when navigating to Campaigns.
+  const [focusCampaign, setFocusCampaign] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showUploads, setShowUploads] = useState(true);
@@ -611,7 +615,11 @@ export default function App() {
         )}
 
         {!result ? (
-          <EmptyState ready={!!historyRaw && !!targetingRaw} />
+          <EmptyState
+            ready={!!historyRaw && !!targetingRaw}
+            historyInfo={historyInfo}
+            targetingInfo={targetingInfo}
+          />
         ) : (
           <Dashboard
             activeSection={activeSection}
@@ -619,7 +627,11 @@ export default function App() {
             thresholds={thresholds}
             bulkAvailable={!!bulkTargets && bulkTargets.length > 0}
             onExport={(kind) => handleExport(kind, result, bulkTargets)}
-            onNavigate={setActiveSection}
+            onNavigate={(s, opts) => {
+              setActiveSection(s);
+              setFocusCampaign(opts?.focusCampaign ?? null);
+            }}
+            focusCampaign={focusCampaign}
           />
         )}
       </main>
@@ -925,6 +937,7 @@ function KpiSelector({
                   ≷
                   <input
                     type="number"
+                    aria-label={`${opt.label} threshold ${opt.unit === "percent" ? "percent" : opt.unit === "dollars" ? "dollars" : "ratio"}`}
                     value={display(opt, current.threshold)}
                     step={opt.unit === "ratio" ? 0.1 : 1}
                     onChange={(e) => editThreshold(opt, e.target.value)}
@@ -941,11 +954,28 @@ function KpiSelector({
         Each selected KPI is evaluated independently per date on a rolling 7-day
         window. Verdict is direction only — magnitude of bid changes is ignored.
       </p>
+      <p className="kpi-selector-note kpi-selector-scope">
+        <strong>Scope:</strong> selected KPIs refine each target&apos;s verdict
+        timeline inside its WhyCard. The PUSH / HOLD / CUT category counts on
+        Action Plan are based on ACoS only.
+      </p>
     </div>
   );
 }
 
-function EmptyState({ ready = false }: { ready?: boolean }) {
+function EmptyState({
+  ready = false,
+  historyInfo = null,
+  targetingInfo = null,
+}: {
+  ready?: boolean;
+  historyInfo?: FileInfo | null;
+  targetingInfo?: FileInfo | null;
+}) {
+  const rowSummary =
+    ready && historyInfo && targetingInfo
+      ? `${historyInfo.rows.toLocaleString()} history rows · ${targetingInfo.rows.toLocaleString()} SP rows loaded.`
+      : null;
   return (
     <section className="empty-state">
       <div className="empty-copy">
@@ -955,6 +985,7 @@ function EmptyState({ ready = false }: { ready?: boolean }) {
             ? "Ready when you are — click Analyze."
             : "Add boxes 1 & 2, then click Analyze."}
         </h2>
+        {rowSummary && <p className="empty-row-summary">{rowSummary}</p>}
         <p>
           You&apos;ll get one simple screen: which keywords to{" "}
           <strong>push</strong>, <strong>hold</strong>, or <strong>cut</strong>{" "}
@@ -986,13 +1017,15 @@ function Dashboard({
   bulkAvailable,
   onExport,
   onNavigate,
+  focusCampaign,
 }: {
   activeSection: Section;
   result: AnalysisResult;
   thresholds: Thresholds;
   bulkAvailable: boolean;
   onExport: (kind: string) => void;
-  onNavigate: (s: Section) => void;
+  onNavigate: (s: Section, opts?: { focusCampaign?: string }) => void;
+  focusCampaign: string | null;
 }) {
   return (
     <div className="dashboard">
@@ -1002,7 +1035,7 @@ function Dashboard({
           thresholds={thresholds}
           bulkAvailable={bulkAvailable}
           onExport={onExport}
-          onNavigate={onNavigate}
+          onNavigate={(s) => onNavigate(s)}
         />
       )}
       {activeSection === "All Targets" && (
@@ -1012,6 +1045,7 @@ function Dashboard({
           <AllTargets
             result={result}
             onExport={onExport}
+            onNavigate={onNavigate}
             lookbackDays={thresholds.lookbackDays}
             targetAcos={thresholds.targetAcos}
           />
@@ -1022,16 +1056,42 @@ function Dashboard({
           result={result}
           thresholds={thresholds}
           onExport={onExport}
+          focusCampaign={focusCampaign}
+          onNavigate={onNavigate}
         />
       )}
       {activeSection === "Products" && (
-        <ProductsView result={result} thresholds={thresholds} />
+        <ProductsView
+          result={result}
+          thresholds={thresholds}
+          onNavigate={onNavigate}
+        />
       )}
       {activeSection === "Sponsored Brands" && <SBView result={result} />}
+      {activeSection === "Data Quality" && (
+        <DataQuality result={result} onExport={onExport} />
+      )}
       {activeSection === "Help" && (
         <>
           <Methodology result={result} />
-          <DataQuality result={result} onExport={onExport} />
+          <section className="panel full method-data-quality-pointer">
+            <div className="panel-header">
+              <div>
+                <h2>Looking for match confidence + unmatched rows?</h2>
+                <p>
+                  The data-quality view moved to its own tab so it&apos;s easier
+                  to find.
+                </p>
+              </div>
+              <button
+                className="button ghost"
+                onClick={() => onNavigate("Data Quality")}
+              >
+                <ShieldCheck size={16} />
+                Open Data Quality →
+              </button>
+            </div>
+          </section>
         </>
       )}
     </div>
@@ -2166,10 +2226,12 @@ function BidDecisionCard({
   row,
   lookbackDays = 7,
   targetAcos = 0.25,
+  onNavigate,
 }: {
   row: AuditRow;
   lookbackDays?: number;
   targetAcos?: number;
+  onNavigate?: (s: Section, opts?: { focusCampaign?: string }) => void;
 }) {
   const [showChart, setShowChart] = useState(false);
   const [actionState, setActionState] = useState<
@@ -2386,6 +2448,9 @@ function BidDecisionCard({
               </div>
               <div
                 className="bdc-kpi"
+                tabIndex={0}
+                role="group"
+                aria-label={`CPC ${cpc}. ${row.currentBid != null ? `At ${money2(row.currentBid)} max bid.` : row.latestBid != null ? `Last bid ${money2(row.latestBid)}.` : ""} Average CPC can exceed your max bid because of dynamic bidding (up to plus 100 percent) and placement modifiers — Amazon controls this.`}
                 title="Average CPC can exceed your max bid because of dynamic bidding (+up to 100%) and placement modifiers — Amazon controls this."
               >
                 <div className="bdc-kpi-label">CPC</div>
@@ -2450,6 +2515,27 @@ function BidDecisionCard({
               <div className="bdc-section-label">
                 How it was decided · Rolling 7-day verdict
               </div>
+              {(() => {
+                const kpiSet = new Set<TimelineKpiVerdict["kpi"]>();
+                for (const entry of row.timeline) {
+                  for (const kv of entry.perKpi) kpiSet.add(kv.kpi);
+                }
+                const kpis = Array.from(kpiSet);
+                if (kpis.length === 0) return null;
+                return (
+                  <div
+                    className="bdc-active-kpis"
+                    aria-label="KPIs in effect for this verdict"
+                  >
+                    <span className="bdc-active-kpis-lbl">KPIs in effect:</span>
+                    {kpis.map((k) => (
+                      <span key={k} className="bdc-active-kpi-chip">
+                        {KPI_LABEL[k]}
+                      </span>
+                    ))}
+                  </div>
+                );
+              })()}
               <BdcVerdictTimeline
                 timeline={row.timeline}
                 showAll={showAllDates}
@@ -2512,6 +2598,17 @@ function BidDecisionCard({
           {RULES_VERSION}
         </div>
         <div className="bdc-footer-right">
+          {onNavigate && row.campaign && (
+            <button
+              type="button"
+              className="bdc-link"
+              onClick={() =>
+                onNavigate("Campaigns", { focusCampaign: row.campaign })
+              }
+            >
+              Open in Campaigns →
+            </button>
+          )}
           <button
             type="button"
             className="bdc-link"
@@ -2728,6 +2825,7 @@ function WhyCard(props: {
   row: AuditRow;
   lookbackDays?: number;
   targetAcos?: number;
+  onNavigate?: (s: Section, opts?: { focusCampaign?: string }) => void;
 }) {
   return <BidDecisionCard {...props} />;
 }
@@ -2844,6 +2942,13 @@ function MoveColumn({
                 count: rows.filter((r) => r.category === "Monitor").length,
                 tone: "slate",
               },
+              {
+                label: "needs match review",
+                count: rows.filter(
+                  (r) => r.category === "No Action Despite Enough Data",
+                ).length,
+                tone: "slate",
+              },
             ] as Array<{ label: string; count: number; tone: string }>
           )
             .filter((b) => b.count > 0)
@@ -2928,6 +3033,14 @@ function ActionPlan({
             <Download size={16} />
             Download action list (CSV)
           </button>
+          <button
+            className="button ghost"
+            onClick={() => onExport("executive")}
+            title="One-page executive summary. Open in browser, then Ctrl+P → Save as PDF."
+          >
+            <Download size={16} />
+            Executive Summary (HTML)
+          </button>
           {/* G12: Amazon Bulk Operations export. Disabled when Box 4 missing. */}
           <button
             className="button primary"
@@ -2982,8 +3095,7 @@ function ActionPlan({
         />
       </div>
       <p className="plan-foot">
-        Target ACoS {percent(thresholds.targetAcos, 0)} ·{" "}
-        {thresholds.mode.toLowerCase()} mode · need the details? Open{" "}
+        Target ACoS {percent(thresholds.targetAcos, 0)} · need the details? Open{" "}
         <button className="linklike" onClick={() => onNavigate("All Targets")}>
           All Targets
         </button>{" "}
@@ -3073,11 +3185,13 @@ const ALL_FILTERS: Array<{
 function AllTargets({
   result,
   onExport,
+  onNavigate,
   lookbackDays = 7,
   targetAcos = 0.25,
 }: {
   result: AnalysisResult;
   onExport: (kind: string) => void;
+  onNavigate?: (s: Section, opts?: { focusCampaign?: string }) => void;
   lookbackDays?: number;
   targetAcos?: number;
 }) {
@@ -3146,6 +3260,7 @@ function AllTargets({
         rows={rows}
         lookbackDays={lookbackDays}
         targetAcos={targetAcos}
+        onNavigate={onNavigate}
       />
     </section>
   );
@@ -3266,11 +3381,13 @@ function ActionTable({
   compact = false,
   lookbackDays = 7,
   targetAcos = 0.25,
+  onNavigate,
 }: {
   rows: AuditRow[];
   compact?: boolean;
   lookbackDays?: number;
   targetAcos?: number;
+  onNavigate?: (s: Section, opts?: { focusCampaign?: string }) => void;
 }) {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("All");
@@ -3459,6 +3576,7 @@ function ActionTable({
                           row={row}
                           lookbackDays={lookbackDays}
                           targetAcos={targetAcos}
+                          onNavigate={onNavigate}
                         />
                       </td>
                     </tr>
@@ -3599,9 +3717,11 @@ interface ProductKpi {
 function ProductsView({
   result,
   thresholds,
+  onNavigate,
 }: {
   result: AnalysisResult;
   thresholds: Thresholds;
+  onNavigate?: (s: Section, opts?: { focusCampaign?: string }) => void;
 }) {
   const targetAcos = thresholds.targetAcos;
   const [sortField, setSortField] = useState<
@@ -4076,6 +4196,7 @@ function ProductsView({
                             compact
                             lookbackDays={thresholds.lookbackDays}
                             targetAcos={thresholds.targetAcos}
+                            onNavigate={onNavigate}
                           />
                         </td>
                       </tr>
@@ -4095,12 +4216,19 @@ function CampaignCard({
   c,
   auditRows,
   targetAcos = 0.25,
+  forceOpen = false,
+  onNavigate,
 }: {
   c: CampaignSummary;
   auditRows: AuditRow[];
   targetAcos?: number;
+  forceOpen?: boolean;
+  onNavigate?: (s: Section, opts?: { focusCampaign?: string }) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(forceOpen);
+  useEffect(() => {
+    if (forceOpen) setExpanded(true);
+  }, [forceOpen]);
   const parsed = parseCampaignName(c.campaign);
   const campaignRows = auditRows.filter((r) => r.campaign === c.campaign);
   return (
@@ -4169,7 +4297,12 @@ function CampaignCard({
               )}
             </div>
           )}
-          <ActionTable rows={campaignRows} compact targetAcos={targetAcos} />
+          <ActionTable
+            rows={campaignRows}
+            compact
+            targetAcos={targetAcos}
+            onNavigate={onNavigate}
+          />
         </div>
       )}
     </div>
@@ -4180,20 +4313,92 @@ function CampaignView({
   result,
   thresholds,
   onExport,
+  focusCampaign,
+  onNavigate,
 }: {
   result: AnalysisResult;
   thresholds: Thresholds;
   onExport: (kind: string) => void;
+  focusCampaign: string | null;
+  onNavigate?: (s: Section, opts?: { focusCampaign?: string }) => void;
 }) {
   const [showAll, setShowAll] = useState(false);
+  const [campStatus, setCampStatus] = useState<"all" | "has-issues" | "clean">(
+    "all",
+  );
+  const [campPriority, setCampPriority] = useState<
+    "All" | "Critical" | "High" | "Medium" | "Low" | "Watch"
+  >("All");
+  const [campSort, setCampSort] = useState<
+    "issues" | "spend" | "acos" | "targets" | "az"
+  >("issues");
+  const [campQuery, setCampQuery] = useState("");
   const INITIAL_LIMIT = 6;
-  const allCampaigns = result.campaignSummary
-    .slice()
-    .sort((a, b) => b.issueCount - a.issueCount);
+
+  // Determine which campaign names have at least one row at the chosen priority.
+  const campaignsByPriority = useMemo(() => {
+    if (campPriority === "All") return null;
+    const set = new Set<string>();
+    for (const row of result.auditRows) {
+      if (row.priority === campPriority) set.add(row.campaign || "Unknown");
+    }
+    return set;
+  }, [campPriority, result.auditRows]);
+
+  const allCampaigns = useMemo(() => {
+    const base = result.campaignSummary.slice();
+    const filtered = base.filter((c) => {
+      if (campStatus === "has-issues" && c.issueCount === 0) return false;
+      if (campStatus === "clean" && c.issueCount > 0) return false;
+      if (campaignsByPriority && !campaignsByPriority.has(c.campaign))
+        return false;
+      if (
+        campQuery.trim() &&
+        !c.campaign.toLowerCase().includes(campQuery.toLowerCase().trim())
+      )
+        return false;
+      return true;
+    });
+    const sorted = filtered.sort((a, b) => {
+      if (campSort === "spend") return b.spend - a.spend;
+      if (campSort === "acos") return (b.acos ?? 0) - (a.acos ?? 0);
+      if (campSort === "targets") return b.targets - a.targets;
+      if (campSort === "az") return a.campaign.localeCompare(b.campaign);
+      return b.issueCount - a.issueCount;
+    });
+    return sorted;
+  }, [
+    result.campaignSummary,
+    campStatus,
+    campaignsByPriority,
+    campQuery,
+    campSort,
+  ]);
+
   const campaigns = showAll
     ? allCampaigns
     : allCampaigns.slice(0, INITIAL_LIMIT);
   const hiddenCount = allCampaigns.length - INITIAL_LIMIT;
+
+  // F-P2-06: When the user arrives here via "Open in Campaigns →" from a
+  // BidDecisionCard, auto-expand and scroll to the matching card.
+  const cardRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
+  useEffect(() => {
+    if (!focusCampaign) return;
+    setShowAll(true);
+    setCampStatus("all");
+    setCampPriority("All");
+    setCampQuery("");
+    const t = setTimeout(() => {
+      const el = cardRefs.current.get(focusCampaign);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("campaign-card-flash");
+        setTimeout(() => el.classList.remove("campaign-card-flash"), 1600);
+      }
+    }, 80);
+    return () => clearTimeout(t);
+  }, [focusCampaign]);
 
   return (
     <div className="campaign-page">
@@ -4202,7 +4407,18 @@ function CampaignView({
           <div>
             <h2>Campaign breakdown</h2>
             <p>
-              Campaigns sorted by how many problems they have. Start at the top.
+              {allCampaigns.length} of {result.campaignSummary.length} campaigns
+              · sorted by{" "}
+              {campSort === "issues"
+                ? "problems ↓"
+                : campSort === "spend"
+                  ? "spend ↓"
+                  : campSort === "acos"
+                    ? "ACoS ↓"
+                    : campSort === "targets"
+                      ? "targets ↓"
+                      : "A → Z"}
+              .
             </p>
           </div>
           <button
@@ -4213,15 +4429,83 @@ function CampaignView({
             Campaign CSV
           </button>
         </div>
+        <div className="campaign-controls">
+          <input
+            type="search"
+            placeholder="Search campaigns by name…"
+            value={campQuery}
+            onChange={(e) => setCampQuery(e.target.value)}
+            className="campaign-search"
+            aria-label="Search campaigns"
+          />
+          <label>
+            <span className="ctrl-lbl">Status</span>
+            <select
+              value={campStatus}
+              onChange={(e) =>
+                setCampStatus(e.target.value as "all" | "has-issues" | "clean")
+              }
+              aria-label="Filter campaigns by status"
+            >
+              <option value="all">All</option>
+              <option value="has-issues">Has issues</option>
+              <option value="clean">Clean</option>
+            </select>
+          </label>
+          <label>
+            <span className="ctrl-lbl">Priority</span>
+            <select
+              value={campPriority}
+              onChange={(e) =>
+                setCampPriority(e.target.value as typeof campPriority)
+              }
+              aria-label="Filter campaigns by priority"
+            >
+              <option value="All">All</option>
+              <option value="Critical">Critical</option>
+              <option value="High">High</option>
+              <option value="Medium">Medium</option>
+              <option value="Low">Low</option>
+              <option value="Watch">Watch</option>
+            </select>
+          </label>
+          <label>
+            <span className="ctrl-lbl">Sort</span>
+            <select
+              value={campSort}
+              onChange={(e) => setCampSort(e.target.value as typeof campSort)}
+              aria-label="Sort campaigns"
+            >
+              <option value="issues">Problems ↓</option>
+              <option value="spend">Spend ↓</option>
+              <option value="acos">ACoS ↓</option>
+              <option value="targets">Targets ↓</option>
+              <option value="az">A → Z</option>
+            </select>
+          </label>
+        </div>
         <div className="campaign-cards">
           {campaigns.map((c) => (
-            <CampaignCard
+            <div
               key={c.campaign}
-              c={c}
-              auditRows={result.auditRows}
-              targetAcos={thresholds.targetAcos}
-            />
+              ref={(el) => {
+                if (el) cardRefs.current.set(c.campaign, el);
+              }}
+            >
+              <CampaignCard
+                c={c}
+                auditRows={result.auditRows}
+                targetAcos={thresholds.targetAcos}
+                forceOpen={focusCampaign === c.campaign}
+                onNavigate={onNavigate}
+              />
+            </div>
           ))}
+          {campaigns.length === 0 && (
+            <p className="muted-note">
+              No campaigns match the current filters.
+            </p>
+          )}
         </div>
         {!showAll && hiddenCount > 0 && (
           <button
@@ -4727,9 +5011,9 @@ function handleExport(
   const rows = result.auditRows;
   if (kind === "executive") {
     downloadText(
-      "amazon-ppc-executive-summary.md",
-      executiveSummaryMarkdown(result.summary),
-      "text/markdown;charset=utf-8",
+      "amazon-ppc-executive-summary.html",
+      executiveSummaryHtml(result),
+      "text/html;charset=utf-8",
     );
     return;
   }
@@ -4752,6 +5036,47 @@ function handleExport(
     if (!bulkTargets || bulkTargets.length === 0) return;
     const built = buildAmazonBulkExport(rows, bulkTargets);
     downloadText("amazon-ppc-bulk-update.csv", built.csv);
+    // F-P2-13: also emit a paired .skipped.csv if anything was skipped, so the
+    // user is never silently denied an actionable row.
+    const actionableSkipped =
+      built.skippedReasons.unmatched + built.skippedReasons.noCurrentBid;
+    if (actionableSkipped > 0) {
+      const skippedRows = rows
+        .filter(
+          (r) =>
+            r.recommendation === "Increase bid" ||
+            r.recommendation === "Reduce bid",
+        )
+        .filter((r) => {
+          const inBulk = bulkTargets.some(
+            (t) =>
+              t.campaign === r.campaign &&
+              t.target === r.targeting &&
+              t.adGroup === r.adGroup,
+          );
+          return !inBulk;
+        });
+      const skippedCsv = toCsv(
+        skippedRows.map((r) => ({
+          Reason: "No current bid in Bulk file — fix bid manually in Amazon",
+          Priority: r.priority,
+          Recommendation: r.recommendation,
+          Category: r.category,
+          Campaign: r.campaign,
+          "Ad Group": r.adGroup,
+          Targeting: r.targeting,
+          "Match Type": r.matchType,
+          "Latest Bid (history)": r.latestBid ?? "",
+          ACoS: r.acos != null ? `${(r.acos * 100).toFixed(2)}%` : "",
+          Spend: r.spend.toFixed(2),
+          Sales: r.sales.toFixed(2),
+          Orders: r.orders,
+        })),
+      );
+      if (skippedCsv) {
+        downloadText("amazon-ppc-bulk-update.skipped.csv", skippedCsv);
+      }
+    }
     return;
   }
   const filtered =
