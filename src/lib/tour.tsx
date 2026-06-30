@@ -101,34 +101,104 @@ export function Tour({
   if (!step) return null;
 
   const isLast = idx === steps.length - 1;
-  // Card position: prefer below target, fall back to above if near bottom
-  const placement =
+  // Keep the card in the viewport even when the highlighted element is tall,
+  // partially scrolled, or close to an edge.
+  const preferredPlacement =
     step.placement ?? (rect && rect.top < 200 ? "bottom" : "top");
-  const cardStyle: React.CSSProperties = (() => {
+  const clamp = (value: number, min: number, max: number) =>
+    Math.min(Math.max(value, min), Math.max(min, max));
+  const cardLayout: {
+    placement: NonNullable<TourStep["placement"]>;
+    style: React.CSSProperties;
+  } = (() => {
     if (!rect) {
       return {
-        left: "50%",
-        top: "50%",
-        transform: "translate(-50%, -50%)",
+        placement: "bottom",
+        style: {
+          left: "50%",
+          top: "50%",
+          transform: "translate(-50%, -50%)",
+        },
       };
     }
     const pad = 16;
+    const cardWidth = 360;
+    const cardHeight = 220;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const left = clamp(
+      rect.left + rect.width / 2 - cardWidth / 2,
+      pad,
+      viewportWidth - cardWidth - pad,
+    );
+    const centerY = clamp(
+      rect.top + rect.height / 2 - cardHeight / 2,
+      pad,
+      viewportHeight - cardHeight - pad,
+    );
+
+    let placement = preferredPlacement;
+    if (
+      placement === "bottom" &&
+      rect.bottom + pad + cardHeight > viewportHeight - pad &&
+      rect.top - pad - cardHeight >= pad
+    ) {
+      placement = "top";
+    }
+    if (
+      placement === "top" &&
+      rect.top - pad - cardHeight < pad &&
+      rect.bottom + pad + cardHeight <= viewportHeight - pad
+    ) {
+      placement = "bottom";
+    }
+
     if (placement === "bottom") {
-      return { left: rect.left + rect.width / 2, top: rect.bottom + pad };
+      return {
+        placement,
+        style: {
+          left,
+          top: clamp(rect.bottom + pad, pad, viewportHeight - cardHeight - pad),
+          transform: "none",
+        },
+      };
     }
     if (placement === "right") {
-      return { left: rect.right + pad, top: rect.top + rect.height / 2 };
+      return {
+        placement,
+        style: {
+          left: clamp(rect.right + pad, pad, viewportWidth - cardWidth - pad),
+          top: centerY,
+          transform: "none",
+        },
+      };
     }
     if (placement === "left") {
       return {
-        right: window.innerWidth - rect.left + pad,
-        top: rect.top + rect.height / 2,
+        placement,
+        style: {
+          left: clamp(
+            rect.left - cardWidth - pad,
+            pad,
+            viewportWidth - cardWidth - pad,
+          ),
+          top: centerY,
+          transform: "none",
+        },
       };
     }
     // top
     return {
-      left: rect.left + rect.width / 2,
-      bottom: window.innerHeight - rect.top + pad,
+      placement: "top",
+      style: {
+        left,
+        top: clamp(
+          rect.top - cardHeight - pad,
+          pad,
+          viewportHeight - cardHeight - pad,
+        ),
+        transform: "none",
+      },
     };
   })();
 
@@ -184,8 +254,8 @@ export function Tour({
       )}
 
       <div
-        className={`tour-card tour-card-${placement}`}
-        style={cardStyle}
+        className={`tour-card tour-card-${cardLayout.placement}`}
+        style={cardLayout.style}
         role="document"
       >
         <div className="tour-step-count">

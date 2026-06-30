@@ -1419,12 +1419,12 @@ h3 {
   position: fixed;
   inset: 0;
   z-index: 90;
-  pointer-events: none; /* let clicks pass through to the highlighted element */
+  pointer-events: none;
 }
 .tour-mask {
   position: fixed;
   background: rgba(15, 23, 42, 0.45);
-  pointer-events: auto;
+  pointer-events: none;
 }
 .tour-mask-full {
   inset: 0;
@@ -1786,15 +1786,6 @@ summary {
     grid-template-columns: 1fr;
   }
 
-  .sidebar {
-    position: static;
-    height: auto;
-  }
-
-  .nav-list {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
   .upload-strip,
   .executive-grid,
   .quality-grid,
@@ -1809,6 +1800,17 @@ summary {
 
   .threshold-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1180px) {
+  .sidebar {
+    position: static;
+    height: auto;
+  }
+
+  .nav-list {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
