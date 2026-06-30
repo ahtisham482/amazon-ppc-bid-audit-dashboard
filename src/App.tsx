@@ -39,25 +39,25 @@ import {
 
 const TOUR_STEPS: TourStep[] = [
   {
-    selector: ".plan",
+    selector: ".plan-banner",
     title: "Your bid-management score",
     body: "The big number is your bid-management health — 0 to 100. Below it you see how many keywords to push, hold, or cut, and the dollars in play.",
     placement: "bottom",
   },
   {
-    selector: ".plan .moves, .plan .move-column, .plan",
+    selector: ".plan-grid, .move-col, .plan",
     title: "Three buckets: push, hold, cut",
     body: "Every audited target lands in one of three buckets — bid up, leave alone, or cut. Each verdict comes with a plain-English reason.",
     placement: "top",
   },
   {
-    selector: '.plan button[class*="primary"], .plan button',
+    selector: ".plan-export-stack .button.primary, .plan-export-stack button",
     title: "Every decision, with a reason",
     body: 'Open "All Targets" in the sidebar to filter, sort, and click any "Why?" to see the exact rule the engine used.',
     placement: "top",
   },
   {
-    selector: ".uploads-region, .sample-banner, .topbar",
+    selector: ".uploads-toggle, .sample-banner, .topbar",
     title: "Tune the rules to your account",
     body: "Defaults are conservative. Open the ⚙ settings panel under the upload boxes to change target ACoS or the windows the engine uses.",
     placement: "top",
@@ -453,19 +453,26 @@ export default function App() {
   const [sampleBannerVisible, setSampleBannerVisible] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const pendingAutoAnalyzeRef = useRef(false);
+  const activeSectionRef = useRef(activeSection);
 
   // Close mobile sidebar when navigation occurs (handled at the nav click site).
   useEffect(() => {
     setSidebarOpen(false);
+    activeSectionRef.current = activeSection;
+    if (activeSection !== "Action Plan") setTourActive(false);
   }, [activeSection]);
 
   // Auto-open the tour on first ever visit, after analysis is ready.
   useEffect(() => {
-    if (result && !hasSeenTour()) {
-      const t = window.setTimeout(() => setTourActive(true), 800);
+    if (result && activeSection === "Action Plan" && !hasSeenTour()) {
+      const t = window.setTimeout(() => {
+        if (activeSectionRef.current === "Action Plan" && !hasSeenTour()) {
+          setTourActive(true);
+        }
+      }, 800);
       return () => window.clearTimeout(t);
     }
-  }, [result]);
+  }, [activeSection, result]);
 
   // When loadSampleData has ingested both files, trigger compute automatically.
   useEffect(() => {
@@ -666,6 +673,7 @@ export default function App() {
           value={{
             restart: () => {
               clearTourSeen();
+              setActiveSection("Action Plan");
               setTourActive(true);
             },
           }}
